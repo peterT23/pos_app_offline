@@ -1168,6 +1168,71 @@ function handleOfflineRequest(db, { method, path, body }) {
   }
 
   // Customers and related details
+  if (m === 'GET' && p === '/api/customers/search-lite') {
+    const qRaw = String(searchParams.get('q') || '').trim();
+    const q = qRaw.toLowerCase();
+    const limit = Math.max(1, Math.min(80, Number(searchParams.get('limit') || 20)));
+    if (!q) return { items: [] };
+
+    try {
+      const likeAny = `%${q}%`;
+      const likePrefix = `${q}%`;
+      const rows = db
+        .prepare(
+          `SELECT local_id, doc
+           FROM pos_customers
+           WHERE lower(coalesce(json_extract(doc, '$.name'), json_extract(doc, '$.fullName'), '')) LIKE ?
+              OR lower(coalesce(json_extract(doc, '$.phone'), '')) LIKE ?
+              OR lower(coalesce(json_extract(doc, '$.customerCode'), '')) LIKE ?
+           ORDER BY
+             CASE WHEN lower(coalesce(json_extract(doc, '$.phone'), '')) = ? THEN 0 ELSE 1 END,
+             CASE WHEN lower(coalesce(json_extract(doc, '$.phone'), '')) LIKE ? THEN 0 ELSE 1 END,
+             CASE WHEN lower(coalesce(json_extract(doc, '$.name'), json_extract(doc, '$.fullName'), '')) LIKE ? THEN 0 ELSE 1 END,
+             local_id DESC
+           LIMIT ?`,
+        )
+        .all(likeAny, likeAny, likeAny, q, likePrefix, likePrefix, limit);
+
+      const items = rows
+        .map((row) => {
+          const c = safeJson(row.doc, null);
+          if (!c || isWalkInCustomer(c)) return null;
+          return {
+            localId: c.localId || row.local_id,
+            customerCode: c.customerCode || '',
+            name: c.name || c.fullName || '',
+            fullName: c.fullName || c.name || '',
+            nickname: c.nickname || '',
+            phone: c.phone || '',
+            points: Number(c.points) || 0,
+            debt: Number(c.debt) || 0,
+          };
+        })
+        .filter(Boolean);
+
+      return { items };
+    } catch {
+      const items = getCustomers(db)
+        .filter((c) => !isWalkInCustomer(c))
+        .filter((c) => {
+          const text = `${c.customerCode || ''} ${c.name || ''} ${c.fullName || ''} ${c.phone || ''}`.toLowerCase();
+          return text.includes(q);
+        })
+        .slice(0, limit)
+        .map((c) => ({
+          localId: c.localId,
+          customerCode: c.customerCode || '',
+          name: c.name || c.fullName || '',
+          fullName: c.fullName || c.name || '',
+          nickname: c.nickname || '',
+          phone: c.phone || '',
+          points: Number(c.points) || 0,
+          debt: Number(c.debt) || 0,
+        }));
+      return { items };
+    }
+  }
+
   if (m === 'GET' && p === '/api/customers') {
     const orders = getOrders(db);
     const returns = getReturns(db);

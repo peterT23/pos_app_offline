@@ -14,7 +14,7 @@ import {
 import {
   Person as PersonIcon
 } from '@mui/icons-material';
-import db from '../db/posDB';
+import { apiRequest } from '../utils/apiClient';
 
 /**
  * Component CustomerSearchDropdown: Dropdown hiển thị kết quả tìm kiếm khách hàng
@@ -38,104 +38,34 @@ export default function CustomerSearchDropdown({
   const [highlightIndex, setHighlightIndex] = useState(-1);
   const dropdownRef = useRef(null);
   const debounceTimerRef = useRef(null);
+  const searchReqSeqRef = useRef(0);
   const itemRefs = useRef([]);
-
-  // Tìm kiếm khách hàng
-  const searchCustomers = (customersList, term) => {
-    if (!term || term.trim().length === 0) {
-      return [];
-    }
-
-    const trimmed = term.trim().toLowerCase();
-    
-    // Sử dụng Map để loại bỏ duplicate dựa trên localId
-    const uniqueCustomersMap = new Map();
-    
-    customersList.forEach(customer => {
-      // Chỉ thêm nếu chưa có trong map
-      if (!uniqueCustomersMap.has(customer.localId)) {
-        // Tìm theo số điện thoại
-        const phoneMatch = customer.phone && customer.phone.toLowerCase().includes(trimmed);
-        
-        // Tìm theo tên
-        const nameMatch = customer.name && customer.name.toLowerCase().includes(trimmed);
-        
-        // Tìm theo biệt danh
-        const nicknameMatch = customer.nickname && customer.nickname.toLowerCase().includes(trimmed);
-        
-        if (phoneMatch || nameMatch || nicknameMatch) {
-          uniqueCustomersMap.set(customer.localId, customer);
-        }
-      }
-    });
-    
-    // Chuyển Map thành Array và sắp xếp
-    return Array.from(uniqueCustomersMap.values()).sort((a, b) => {
-      // Ưu tiên số điện thoại khớp chính xác
-      const aPhoneExact = a.phone?.toLowerCase() === trimmed;
-      const bPhoneExact = b.phone?.toLowerCase() === trimmed;
-      
-      if (aPhoneExact && !bPhoneExact) return -1;
-      if (!aPhoneExact && bPhoneExact) return 1;
-      
-      // Sau đó ưu tiên số điện thoại bắt đầu bằng term
-      const aPhoneStarts = a.phone?.toLowerCase().startsWith(trimmed);
-      const bPhoneStarts = b.phone?.toLowerCase().startsWith(trimmed);
-      
-      if (aPhoneStarts && !bPhoneStarts) return -1;
-      if (!aPhoneStarts && bPhoneStarts) return 1;
-      
-      return 0;
-    });
-  };
 
   // Load customers với debounce
   const loadCustomers = useCallback(async (term) => {
-    if (!term || term.trim().length === 0) {
+    const keyword = String(term || '').trim();
+    if (!keyword) {
       setCustomers([]);
       setLoading(false);
       return;
     }
 
+    const reqSeq = ++searchReqSeqRef.current;
     try {
       setLoading(true);
-      
-      // Đảm bảo database đã được mở
-      await db.open().catch(err => {
-        if (err.name !== 'DatabaseClosedError') {
-          throw err;
-        }
-      });
-
-      // Lấy tất cả khách hàng
-      const allCustomers = await db.customers.toArray();
-      
-      // Loại bỏ duplicate dựa trên số điện thoại (ưu tiên khách hàng mới nhất)
-      const uniqueCustomersMap = new Map();
-      allCustomers.forEach(customer => {
-        if (customer.phone) {
-          const existing = uniqueCustomersMap.get(customer.phone);
-          if (!existing || (customer.createdAt && existing.createdAt && customer.createdAt > existing.createdAt)) {
-            uniqueCustomersMap.set(customer.phone, customer);
-          }
-        } else {
-          // Nếu không có phone, dùng localId làm key
-          if (!uniqueCustomersMap.has(customer.localId)) {
-            uniqueCustomersMap.set(customer.localId, customer);
-          }
-        }
-      });
-      const uniqueCustomers = Array.from(uniqueCustomersMap.values());
-      
-      // Tìm kiếm
-      const filtered = searchCustomers(uniqueCustomers, term);
-      
-      setCustomers(filtered);
+      const response = await apiRequest(
+        `/api/customers/search-lite?q=${encodeURIComponent(keyword)}&limit=30`,
+      );
+      if (reqSeq !== searchReqSeqRef.current) return;
+      setCustomers(Array.isArray(response?.items) ? response.items : []);
     } catch (error) {
+      if (reqSeq !== searchReqSeqRef.current) return;
       console.error('Lỗi load khách hàng:', error);
       setCustomers([]);
     } finally {
-      setLoading(false);
+      if (reqSeq === searchReqSeqRef.current) {
+        setLoading(false);
+      }
     }
   }, []);
 
@@ -146,10 +76,10 @@ export default function CustomerSearchDropdown({
     }
 
     if (open && searchTerm.trim()) {
-      // Debounce search: chờ 300ms sau khi người dùng ngừng gõ
+      // Debounce search ngắn để giữ cảm giác gõ mượt khi dữ liệu lớn
       debounceTimerRef.current = setTimeout(() => {
         loadCustomers(searchTerm);
-      }, 300);
+      }, 120);
     } else {
       setCustomers([]);
       setLoading(false);
