@@ -1,0 +1,54 @@
+name: Build Windows Installer
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-win:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Apply version from Git tag
+        run: |
+          if ("${env:GITHUB_REF}".StartsWith("refs/tags/v")) {
+            $version = "${env:GITHUB_REF_NAME}".Substring(1)
+            Write-Host "Using tag version: $version"
+            npm version $version --no-git-tag-version --allow-same-version
+          } else {
+            $version = node -p "require('./package.json').version"
+            Write-Host "Using package.json version: $version"
+          }
+          "APP_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Rebuild native modules for Electron (Windows)
+        run: npx electron-builder install-app-deps --platform=win32 --arch=x64
+
+      - name: Build renderer
+        run: npm run build:renderer
+
+      - name: Build Windows packages
+        run: npx electron-builder --win nsis portable --x64 --publish never
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: pos-offline-win-v${{ env.APP_VERSION }}
+          path: |
+            release/*.exe
+            release/*.blockmap
+            release/latest*.yml
