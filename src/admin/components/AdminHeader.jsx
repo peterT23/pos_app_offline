@@ -187,7 +187,14 @@ export default function AdminHeader() {
           open={Boolean(anchorEls.account)}
           onClose={() => closeMenu('account')}
         >
-          <MenuItem onClick={() => closeMenu('account')}>Tài khoản</MenuItem>
+          <MenuItem
+            onClick={() => {
+              closeMenu('account');
+              navigate('/admin/account');
+            }}
+          >
+            Tài khoản
+          </MenuItem>
           <MenuItem onClick={() => closeMenu('account')}>Đổi mật khẩu</MenuItem>
         </Menu>
       </Box>
@@ -261,7 +268,14 @@ export default function AdminHeader() {
           >
             Hóa đơn
           </MenuItem>
-          <MenuItem onClick={() => closeMenu('orders')}>Trả hàng</MenuItem>
+          <MenuItem
+            onClick={() => {
+              closeMenu('orders');
+              navigate('/admin/returns');
+            }}
+          >
+            Trả hàng
+          </MenuItem>
         </Menu>
 
         <Button color="inherit" onClick={(e) => openMenu('customers', e)}>Khách hàng</Button>

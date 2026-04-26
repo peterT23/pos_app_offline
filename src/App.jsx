@@ -15,13 +15,16 @@ import AdminStoresPage from './admin/pages/StoresPage'
 import AdminSuppliersPage from './admin/pages/SuppliersPage'
 import AdminReportsPage from './admin/pages/ReportsPage'
 import AdminInvoicesPage from './admin/pages/InvoicesPage'
+import AdminReturnsPage from './admin/pages/ReturnsPage'
 import AdminPurchaseOrdersPage from './admin/pages/PurchaseOrdersPage'
 import AdminPurchaseOrderNewPage from './admin/pages/PurchaseOrderNewPage'
 import AdminCreatePurchaseOrderPage from './admin/pages/CreatePurchaseOrderPage'
 import AdminPurchaseReturnPage from './admin/pages/PurchaseReturnPage'
 import AdminSettingsPage from './admin/pages/SettingsPage'
+import AdminAccountPage from './admin/pages/AccountPage'
 import { AuthProvider } from './auth/AuthContext'
 import RequireAuth from './auth/RequireAuth'
+import AppErrorBoundary from './components/AppErrorBoundary'
 import './App.css'
 
 function AppContent() {
@@ -156,6 +159,14 @@ function AppContent() {
           )}
         />
         <Route
+          path="/admin/returns"
+          element={(
+            <RequireAuth>
+              <AdminReturnsPage />
+            </RequireAuth>
+          )}
+        />
+        <Route
           path="/admin/purchase-orders"
           element={(
             <RequireAuth>
@@ -195,6 +206,14 @@ function AppContent() {
             </RequireAuth>
           )}
         />
+        <Route
+          path="/admin/account"
+          element={(
+            <RequireAuth>
+              <AdminAccountPage />
+            </RequireAuth>
+          )}
+        />
         <Route path="/admin/*" element={<Navigate to="/admin/dashboard" replace />} />
         
         {/* Mặc định redirect về POS */}
@@ -208,9 +227,11 @@ function AppContent() {
 function App() {
   return (
     <HashRouter>
-      <AuthProvider>
-        <AppContent />
-      </AuthProvider>
+      <AppErrorBoundary>
+        <AuthProvider>
+          <AppContent />
+        </AuthProvider>
+      </AppErrorBoundary>
     </HashRouter>
   )
 }

@@ -33,7 +33,7 @@ export default function BottomFooter({
       }}
     >
       {/* Mode selection buttons bên trái */}
-      <Box sx={{ display: 'flex', gap: 1 }}>
+      {/* <Box sx={{ display: 'flex', gap: 1 }}>
         <Button
           variant={saleMode === 'quick' ? 'contained' : 'outlined'}
           size="small"
@@ -73,10 +73,10 @@ export default function BottomFooter({
         >
           Bán giao hàng
         </Button>
-      </Box>
+      </Box> */}
 
       {/* Icons bên phải */}
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+      {/* <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
         <Chip
           icon={<ChatIcon fontSize="small" />}
           label="1900 6522"
@@ -89,7 +89,7 @@ export default function BottomFooter({
         <IconButton size="small" title="Cài đặt">
           <SettingsIcon />
         </IconButton>
-      </Box>
+      </Box> */}
     </Box>
   );
 }

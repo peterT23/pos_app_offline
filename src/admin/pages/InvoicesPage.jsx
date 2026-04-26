@@ -48,6 +48,7 @@ import MoreHorizIcon from '@mui/icons-material/MoreHoriz';
 import StarBorderOutlinedIcon from '@mui/icons-material/StarBorderOutlined';
 import Layout from '../components/Layout';
 import { apiRequest } from '../utils/apiClient';
+import { displayOrderCode, displayProductCode } from '../../utils/codeDisplay';
 
 const TIME_PRESET_GROUPS = [
   { title: 'Theo ngày', options: [{ value: 'today', label: 'Hôm nay' }, { value: 'yesterday', label: 'Hôm qua' }] },
@@ -423,7 +424,16 @@ export default function InvoicesPage() {
   const resolveItemProductCode = useCallback(
     (item) => {
       const hit = resolveItemProduct(item);
-      return hit?.productCode || item?.productCode || item?.productLocalId || item?.productId || '—';
+      const primaryCode =
+        hit?.productCode ||
+        item?.productCode ||
+        hit?.sku ||
+        item?.sku ||
+        hit?.code ||
+        item?.code ||
+        '';
+      const fallbackBarcode = hit?.barcode || item?.barcode || '';
+      return displayProductCode(primaryCode, fallbackBarcode);
     },
     [resolveItemProduct],
   );
@@ -483,7 +493,7 @@ export default function InvoicesPage() {
   const getCellValue = useCallback((colId, row) => {
     switch (colId) {
       case 'orderCode':
-        return row.orderCode || row.localId || '—';
+        return displayOrderCode(row.orderCode);
       case 'time':
         return formatDateTime(row.createdAt);
       case 'createdTime':
@@ -655,22 +665,60 @@ export default function InvoicesPage() {
   const handlePrint = useCallback(() => {
     if (!detailData?.order) return;
     const win = window.open('', '_blank');
+    if (!win) return;
     const order = detailData.order;
     const items = detailData.items || [];
     win.document.write(`
-      <!DOCTYPE html><html><head><meta charset="utf-8"><title>Hóa đơn ${order.orderCode || ''}</title></head><body style="font-family: Arial; padding: 16px;">
-      <h2>Hóa đơn ${order.orderCode || ''}</h2>
-      <p>Ngày: ${formatDateTime(order.createdAt)} | Khách: ${order.customerName || 'Khách lẻ'}</p>
-      <table border="1" cellpadding="6" style="border-collapse: collapse; width: 100%;">
-        <tr><th>Mã hàng</th><th>Tên hàng</th><th>SL</th><th>Đơn giá</th><th>Thành tiền</th></tr>
-        ${(items || []).map((i) => `<tr><td>${resolveItemProductCode(i)}</td><td>${i.productName || ''}</td><td>${i.qty ?? ''}</td><td>${formatMoney(i.price)}</td><td>${formatMoney(i.subtotal)}</td></tr>`).join('')}
-      </table>
-      <p><strong>Tổng tiền hàng:</strong> ${formatMoney(detailSummary.totalGoods)} | <strong>Khách đã trả:</strong> ${formatMoney(detailSummary.paid)}</p>
-      </body></html>
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8">
+        <title>Hóa đơn ${order.orderCode || ''}</title>
+        <style>
+          body { font-family: Arial, sans-serif; margin: 0; background: #f3f4f6; color: #111827; }
+          .toolbar { position: sticky; top: 0; z-index: 2; display: flex; gap: 8px; padding: 10px; background: #fff; border-bottom: 1px solid #e5e7eb; }
+          .toolbar button { padding: 8px 12px; cursor: pointer; border: 1px solid #d1d5db; border-radius: 6px; background: #fff; }
+          .paper { width: 80mm; margin: 12px auto; background: #fff; padding: 8px 6px; box-sizing: border-box; }
+          .title { text-align: center; font-size: 14px; font-weight: 700; margin-bottom: 6px; }
+          .meta { font-size: 11px; line-height: 1.45; margin-bottom: 6px; }
+          table { width: 100%; border-collapse: collapse; font-size: 10.5px; }
+          th, td { border-bottom: 1px dashed #c7c7c7; padding: 3px 2px; text-align: left; vertical-align: top; }
+          th.num, td.num { text-align: right; }
+          .totals { margin-top: 6px; font-size: 11px; line-height: 1.5; }
+          .cut-line { margin-top: 8px; padding-top: 4px; border-top: 1px dashed #333; text-align: center; font-size: 9px; }
+          @media print {
+            @page { size: 80mm auto; margin: 2mm; }
+            body { background: #fff; }
+            .toolbar { display: none !important; }
+            .paper { width: 76mm; margin: 0 auto; padding: 0; }
+          }
+        </style>
+      </head>
+      <body>
+        <div class="toolbar">
+          <button onclick="window.print()">In / Chọn máy in</button>
+        </div>
+        <div class="paper">
+          <div class="title">HÓA ĐƠN BÁN HÀNG</div>
+          <div class="meta">
+            <div><strong>Mã hóa đơn:</strong> ${order.orderCode || ''}</div>
+            <div><strong>Ngày:</strong> ${formatDateTime(order.createdAt)}</div>
+            <div><strong>Khách:</strong> ${order.customerName || 'Khách lẻ'}</div>
+          </div>
+          <table>
+            <tr><th>Mã</th><th>Tên hàng</th><th class="num">SL</th><th class="num">Tiền</th></tr>
+            ${(items || []).map((i) => `<tr><td>${resolveItemProductCode(i)}</td><td>${i.productName || ''}</td><td class="num">${i.qty ?? ''}</td><td class="num">${formatMoney(i.subtotal)}</td></tr>`).join('')}
+          </table>
+          <div class="totals">
+            <div><strong>Tổng tiền hàng:</strong> ${formatMoney(detailSummary.totalGoods)}</div>
+            <div><strong>Khách đã trả:</strong> ${formatMoney(detailSummary.paid)}</div>
+          </div>
+          <div class="cut-line">--- KẾT THÚC HÓA ĐƠN ---</div>
+        </div>
+      </body>
+      </html>
     `);
     win.document.close();
-    win.print();
-    win.close();
   }, [detailData, detailSummary, resolveItemProductCode]);
 
   const openPosEdit = useCallback(async () => {
@@ -991,16 +1039,34 @@ export default function InvoicesPage() {
                                           </Table>
                                         </TableContainer>
                                         <Box sx={{ display: 'flex', gap: 2, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                                          <Box sx={{ flex: '1 1 200px', minWidth: 0 }}>
                                             <TextField
                                             size="small"
                                             placeholder="Ghi chú..."
                                             value={detailNote}
-                                            onChange={(e) => setDetailNote(e.target.value)}
-                                              disabled
+                                            onChange={(e) => {
+                                              setDetailNote(e.target.value);
+                                              setEditMode(true);
+                                            }}
                                             multiline
                                             rows={2}
-                                            sx={{ flex: '1 1 200px', minWidth: 0 }}
+                                            fullWidth
                                           />
+                                            <Box sx={{ mt: 1, display: 'flex', justifyContent: 'flex-end' }}>
+                                              <Button
+                                                size="small"
+                                                variant="outlined"
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  handleSaveNote();
+                                                }}
+                                                disabled={savingNote || !editMode}
+                                                sx={{ textTransform: 'none' }}
+                                              >
+                                                {savingNote ? 'Đang lưu...' : 'Lưu ghi chú'}
+                                              </Button>
+                                            </Box>
+                                          </Box>
                                           <Box sx={{ minWidth: 200 }}>
                                             <Typography variant="body2" color="text.secondary">Tổng tiền hàng ({(detailData.items || []).length}): {formatMoney(detailSummary.totalGoods)}</Typography>
                                             <Typography variant="body2" color="text.secondary">Giảm giá hóa đơn: {formatMoney(detailSummary.discount)}</Typography>
@@ -1072,7 +1138,7 @@ export default function InvoicesPage() {
         <DialogTitle>Xác nhận hủy hóa đơn</DialogTitle>
         <DialogContent>
           <Typography>
-            Bạn có chắc muốn hủy hóa đơn <strong>{orderToCancel?.orderCode || orderToCancel?.localId || ''}</strong>?
+            Bạn có chắc muốn hủy hóa đơn <strong>{displayOrderCode(orderToCancel?.orderCode)}</strong>?
           </Typography>
         </DialogContent>
         <DialogActions>

@@ -2,6 +2,7 @@ const { app, BrowserWindow, ipcMain, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const http = require('http');
 const { execFile } = require('child_process');
 const Database = require('better-sqlite3');
 const offlineApi = require('./offlineApi.cjs');
@@ -186,7 +187,27 @@ function seedPosSamples() {
   }
 }
 
-function createWindow() {
+function canReachDevServer(url, timeoutMs = 1200) {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (ok) => {
+      if (done) return;
+      done = true;
+      resolve(ok);
+    };
+    const req = http.get(url, (res) => {
+      res.resume();
+      finish(Boolean(res.statusCode && res.statusCode >= 200 && res.statusCode < 500));
+    });
+    req.on('error', () => finish(false));
+    req.setTimeout(timeoutMs, () => {
+      req.destroy();
+      finish(false);
+    });
+  });
+}
+
+async function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1100,
     height: 760,
@@ -206,9 +227,19 @@ function createWindow() {
 
   const devUrl = 'http://localhost:5188/#/';
   if (process.env.NODE_ENV === 'development' || !app.isPackaged) {
-    mainWindow.loadURL(devUrl);
-    if (!process.env.POS_OFFLINE_NO_DEVTOOLS) {
-      mainWindow.webContents.openDevTools({ mode: 'detach' });
+    const devAlive = await canReachDevServer('http://localhost:5188/');
+    if (devAlive) {
+      mainWindow.loadURL(devUrl);
+      if (!process.env.POS_OFFLINE_NO_DEVTOOLS) {
+        mainWindow.webContents.openDevTools({ mode: 'detach' });
+      }
+    } else {
+      const localIndex = path.join(__dirname, '..', 'dist', 'renderer', 'index.html');
+      if (fs.existsSync(localIndex)) {
+        mainWindow.loadFile(localIndex, { hash: '/' });
+      } else {
+        mainWindow.loadURL('data:text/html;charset=utf-8,<h3 style="font-family:Arial;padding:16px">Renderer unavailable. Run <code>npm run dev</code> or build renderer first.</h3>');
+      }
     }
   } else {
     mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'renderer', 'index.html'), { hash: '/' });
@@ -314,7 +345,78 @@ ipcMain.handle('offline:api', (_e, payload) => {
   }
 });
 
-app.whenReady().then(() => {
+ipcMain.handle('print:k80', async (_e, payload = {}) => {
+  const html = String(payload.html || '');
+  const copies = Math.max(1, Math.min(5, Number(payload.copies) || 1));
+  if (!html.trim()) return { ok: false, message: 'Empty print payload' };
+
+  const printOnce = () =>
+    new Promise((resolve, reject) => {
+      const printWindow = new BrowserWindow({
+        show: false,
+        webPreferences: {
+          sandbox: true,
+          contextIsolation: true,
+          nodeIntegration: false,
+        },
+      });
+      let settled = false;
+      const finish = (err) => {
+        if (settled) return;
+        settled = true;
+        try {
+          if (!printWindow.isDestroyed()) printWindow.close();
+        } catch {
+          // ignore close errors
+        }
+        if (err) reject(err);
+        else resolve(true);
+      };
+
+      printWindow.webContents.once('did-finish-load', () => {
+        setTimeout(() => {
+          try {
+            printWindow.webContents.print(
+              {
+                silent: true,
+                printBackground: false,
+                margins: { marginType: 'none' },
+              },
+              (success, failureReason) => {
+                if (!success) {
+                  finish(new Error(failureReason || 'Print failed'));
+                  return;
+                }
+                finish();
+              },
+            );
+          } catch (err) {
+            finish(err instanceof Error ? err : new Error(String(err)));
+          }
+        }, 120);
+      });
+
+      printWindow.webContents.once('did-fail-load', (_event, _code, desc) => {
+        finish(new Error(desc || 'Load print content failed'));
+      });
+
+      printWindow
+        .loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
+        .catch((err) => finish(err instanceof Error ? err : new Error(String(err))));
+    });
+
+  try {
+    for (let i = 0; i < copies; i += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      await printOnce();
+    }
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, message: String(err?.message || err) };
+  }
+});
+
+app.whenReady().then(async () => {
   try {
     initDatabase();
   } catch (e) {
@@ -322,7 +424,7 @@ app.whenReady().then(() => {
     console.error('SQLite init failed:', e);
     db = null;
   }
-  createWindow();
+  await createWindow();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });

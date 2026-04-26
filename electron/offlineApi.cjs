@@ -106,6 +106,7 @@ function upsertKvNs(db, ns, id, doc) {
 const CUSTOMER_LOYALTY_SETTINGS_KEY = 'customer_loyalty';
 const DATA_CLEANUP_HISTORY_KEY = 'data_cleanup_history';
 const DATA_CLEANUP_SCHEDULES_KEY = 'data_cleanup_schedules';
+const STORE_PROFILE_HISTORY_KEY = 'store_profile_history';
 
 function defaultCustomerLoyaltySettings() {
   return {
@@ -176,6 +177,16 @@ function getDataCleanupSchedules(db) {
 
 function saveDataCleanupSchedules(db, items) {
   upsertKvNs(db, 'setting', DATA_CLEANUP_SCHEDULES_KEY, items);
+}
+
+function getStoreProfileHistory(db) {
+  const row = db.prepare(`SELECT v FROM kv_store WHERE ns = 'setting' AND k = ?`).get(STORE_PROFILE_HISTORY_KEY);
+  const parsed = safeJson(row?.v || '[]', []);
+  return Array.isArray(parsed) ? parsed : [];
+}
+
+function saveStoreProfileHistory(db, items) {
+  upsertKvNs(db, 'setting', STORE_PROFILE_HISTORY_KEY, Array.isArray(items) ? items : []);
 }
 
 function matchDocByPeriod(doc, inPeriod) {
@@ -825,12 +836,16 @@ function handleOfflineRequest(db, { method, path, body }) {
 
   // Stores
   if (m === 'GET' && (p === '/api/stores/me' || p === '/api/stores')) {
+    const websiteByStoreId = new Map(
+      listKvNs(db, 'store_profile').map((item) => [String(item.storeId || item._id || ''), String(item.website || '')]),
+    );
     const stores = db.prepare('SELECT * FROM stores ORDER BY store_id').all().map((row, idx) => ({
       _id: row.store_id,
       storeId: row.store_id,
       name: row.name,
       phone: row.phone || '',
       address: row.address || '',
+      website: websiteByStoreId.get(String(row.store_id)) || '',
       isHeadquarters: idx === 0,
     }));
     return { stores };
@@ -841,7 +856,78 @@ function handleOfflineRequest(db, { method, path, body }) {
     db.prepare(
       `INSERT OR REPLACE INTO stores (store_id, name, phone, address, created_at) VALUES (?, ?, ?, ?, ?)`,
     ).run(sid, name, String(b.phone || '').trim(), String(b.address || '').trim(), Date.now());
-    return { store: { _id: sid, storeId: sid, name, phone: b.phone || '', address: b.address || '' } };
+    const website = String(b.website || '').trim();
+    upsertKvNs(db, 'store_profile', sid, { _id: sid, storeId: sid, website, updatedAt: Date.now() });
+    return { store: { _id: sid, storeId: sid, name, phone: b.phone || '', address: b.address || '', website } };
+  }
+  if (m === 'GET' && p === '/api/store-profile') {
+    const storeRows = db.prepare('SELECT * FROM stores ORDER BY store_id').all();
+    const requestedStoreId = String(searchParams.get('storeId') || '').trim();
+    const row =
+      storeRows.find((it) => String(it.store_id) === requestedStoreId) ||
+      storeRows[0] ||
+      null;
+    if (!row) return { profile: null, history: [] };
+    const sid = String(row.store_id);
+    const profileKv = listKvNs(db, 'store_profile').find((it) => String(it.storeId || it._id || '') === sid) || {};
+    const allHistory = getStoreProfileHistory(db);
+    const history = allHistory
+      .filter((it) => String(it.storeId || '') === sid)
+      .sort((a, b) => normalizeTs(b.updatedAt) - normalizeTs(a.updatedAt))
+      .slice(0, 50);
+    return {
+      profile: {
+        _id: sid,
+        storeId: sid,
+        name: String(row.name || ''),
+        phone: String(row.phone || ''),
+        address: String(row.address || ''),
+        website: String(profileKv.website || ''),
+      },
+      history,
+    };
+  }
+  if (m === 'PATCH' && p === '/api/store-profile') {
+    const storeRows = db.prepare('SELECT * FROM stores ORDER BY store_id').all();
+    const requestedStoreId = String(b.storeId || '').trim();
+    const row =
+      storeRows.find((it) => String(it.store_id) === requestedStoreId) ||
+      storeRows[0] ||
+      null;
+    if (!row) return { ok: false, error: 'Không tìm thấy gian hàng' };
+    const sid = String(row.store_id);
+    const nextName = String(b.name ?? row.name ?? '').trim();
+    const nextPhone = String(b.phone ?? row.phone ?? '').trim();
+    const nextAddress = String(b.address ?? row.address ?? '').trim();
+    const nextWebsite = String(b.website || '').trim();
+    db.prepare('UPDATE stores SET name = ?, phone = ?, address = ? WHERE store_id = ?')
+      .run(nextName || 'Cửa hàng', nextPhone, nextAddress, sid);
+    upsertKvNs(db, 'store_profile', sid, { _id: sid, storeId: sid, website: nextWebsite, updatedAt: Date.now() });
+    const history = getStoreProfileHistory(db);
+    history.push({
+      _id: makeId('store_profile_history'),
+      storeId: sid,
+      updatedAt: Date.now(),
+      updatedBy: String(b.updatedBy || b.userName || 'owner'),
+      changes: {
+        name: nextName || 'Cửa hàng',
+        phone: nextPhone,
+        address: nextAddress,
+        website: nextWebsite,
+      },
+    });
+    saveStoreProfileHistory(db, history.slice(-200));
+    return {
+      ok: true,
+      profile: {
+        _id: sid,
+        storeId: sid,
+        name: nextName || 'Cửa hàng',
+        phone: nextPhone,
+        address: nextAddress,
+        website: nextWebsite,
+      },
+    };
   }
 
   // Users
@@ -1966,16 +2052,41 @@ function handleOfflineRequest(db, { method, path, body }) {
       if (area && String(c.area || '').trim() !== area) return false;
       const pointsMin = searchParams.get('pointsMin');
       const pointsMax = searchParams.get('pointsMax');
+      const debtMin = searchParams.get('debtMin');
+      const debtMax = searchParams.get('debtMax');
+      if (debtMin != null && debtMin !== '' && Number(c.debt || 0) < Number(debtMin)) return false;
+      if (debtMax != null && debtMax !== '' && Number(c.debt || 0) > Number(debtMax)) return false;
       if (pointsMin != null && pointsMin !== '' && Number(c.points || 0) < Number(pointsMin)) return false;
       if (pointsMax != null && pointsMax !== '' && Number(c.points || 0) > Number(pointsMax)) return false;
+      const createdFrom = searchParams.get('createdFrom');
+      const createdTo = searchParams.get('createdTo');
+      if (createdFrom || createdTo) {
+        const ts = normalizeTs(c.createdAt || c.updatedAt || 0);
+        if (createdFrom) {
+          const fromTs = Date.parse(`${createdFrom}T00:00:00`);
+          if (Number.isFinite(fromTs) && ts < fromTs) return false;
+        }
+        if (createdTo) {
+          const toTs = Date.parse(`${createdTo}T23:59:59.999`);
+          if (Number.isFinite(toTs) && ts > toTs) return false;
+        }
+      }
       return true;
     });
     const start = (page - 1) * limit;
     const items = filtered.slice(start, start + limit);
+    const pageSumDebt = items.reduce((s, c) => s + (Number(c.debt) || 0), 0);
+    const pageSumPoints = items.reduce((s, c) => s + (Number(c.points) || 0), 0);
+    const pageSumSales = items.reduce((s, c) => s + (Number(c.totalSales) || 0), 0);
+    const pageSumNet = items.reduce((s, c) => s + (Number(c.netSales) || 0), 0);
     const summary = {
       totalCustomers: filtered.length,
       totalDebt: filtered.reduce((s, c) => s + (Number(c.debt) || 0), 0),
       totalPoints: filtered.reduce((s, c) => s + (Number(c.points) || 0), 0),
+      pageSumDebt,
+      pageSumPoints,
+      pageSumSales,
+      pageSumNet,
     };
     return { items, total: filtered.length, summary };
   }
@@ -2239,6 +2350,79 @@ function handleOfflineRequest(db, { method, path, body }) {
     return { orders: result.slice(start, start + limit), total: result.length, page, limit };
   }
 
+  if (m === 'GET' && p === '/api/returns') {
+    const returns = getReturns(db);
+    const orders = getOrders(db);
+    const orderByLocalId = new Map(orders.map((o) => [String(o.localId || ''), o]));
+    const orderByCode = new Map(orders.map((o) => [String(o.orderCode || ''), o]));
+    const returnItemsByReturnId = computeReturnItemsByReturnId(db);
+    const statusRaw = String(searchParams.get('status') || '').trim();
+    const statusSet = statusRaw ? new Set(statusRaw.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean)) : null;
+    const typeRaw = String(searchParams.get('type') || '').trim();
+    const typeSet = typeRaw ? new Set(typeRaw.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean)) : null;
+    const creator = String(searchParams.get('creator') || '').trim().toLowerCase();
+    const receiver = String(searchParams.get('receiver') || '').trim().toLowerCase();
+    const term = String(searchParams.get('search') || '').trim().toLowerCase();
+    const page = Math.max(1, Number(searchParams.get('page') || 1));
+    const limit = Math.max(1, Number(searchParams.get('limit') || 50));
+    const filterByPeriod = buildPeriodFilter(searchParams);
+
+    const result = returns
+      .map((r) => {
+        const linkedOrder =
+          orderByLocalId.get(String(r.orderLocalId || '')) ||
+          orderByCode.get(String(r.orderCode || '')) ||
+          null;
+        const returnItems = returnItemsByReturnId.get(r.localId) || [];
+        const exchangeItems = Array.isArray(r.exchangeItems) ? r.exchangeItems : [];
+        const totalReturnAmount = Number(r.totalReturnAmount) || returnItems.reduce((s, it) => s + (Number(it.subtotal) || 0), 0);
+        const totalExchangeAmount =
+          Number(r.totalExchangeAmount) ||
+          exchangeItems.reduce((s, it) => s + (Number(it.subtotal) || 0), 0);
+        const invoiceType = r.exchangeOrderCode || exchangeItems.length > 0 ? 'exchange' : 'return';
+        const status = String(r.status || 'completed').toLowerCase();
+        return {
+          ...r,
+          _id: r.localId,
+          returnCode: r.returnCode || r.localId,
+          orderCode: r.orderCode || linkedOrder?.orderCode || '',
+          customerName: r.customerName || linkedOrder?.customerName || '',
+          cashierName: r.cashierName || linkedOrder?.cashierName || '',
+          receiverName: r.receiverName || r.receivedBy || '',
+          invoiceType,
+          status,
+          totalReturnAmount,
+          totalExchangeAmount,
+          amountDelta: totalExchangeAmount - totalReturnAmount,
+          itemsCount: returnItems.length,
+          returnItems,
+          exchangeItems,
+        };
+      })
+      .filter((r) => {
+        if (!filterByPeriod(normalizeTs(r.createdAt))) return false;
+        if (statusSet && !statusSet.has(String(r.status || '').toLowerCase())) return false;
+        if (typeSet && !typeSet.has(String(r.invoiceType || '').toLowerCase())) return false;
+        if (creator) {
+          const c = String(r.cashierName || '').toLowerCase();
+          if (!c.includes(creator)) return false;
+        }
+        if (receiver) {
+          const rv = String(r.receiverName || '').toLowerCase();
+          if (!rv.includes(receiver)) return false;
+        }
+        if (term) {
+          const text = `${r.returnCode || ''} ${r.localId || ''} ${r.orderCode || ''} ${r.customerName || ''}`.toLowerCase();
+          if (!text.includes(term)) return false;
+        }
+        return true;
+      })
+      .sort((a, b) => normalizeTs(b.createdAt) - normalizeTs(a.createdAt));
+
+    const start = (page - 1) * limit;
+    return { returns: result.slice(start, start + limit), total: result.length, page, limit };
+  }
+
   const replaceOrder = p.match(/^\/api\/orders\/(.+)\/replace$/);
   if (m === 'POST' && replaceOrder) {
     const id = decodeURIComponent(replaceOrder[1]);
@@ -2276,7 +2460,32 @@ function handleOfflineRequest(db, { method, path, body }) {
     const order = orders.find((o) => String(o.localId) === id || String(o.orderCode) === id || String(o._id) === id);
     if (order) {
       if (m === 'GET') {
-        const items = (computeOrderItemsByOrderId(db).get(order.localId) || []).map((it) => ({ ...it, orderLocalId: order.localId }));
+        const normalizeProductKey = (value) => String(value || '').trim().replace(/_/g, '-').toLowerCase();
+        const productMap = new Map();
+        const productByName = new Map();
+        getProducts(db).forEach((pItem) => {
+          const keys = [pItem.localId, pItem._id, pItem.productCode]
+            .filter(Boolean)
+            .map((k) => normalizeProductKey(k));
+          keys.forEach((k) => productMap.set(k, pItem));
+          const nameKey = String(pItem.name || '').trim().toLowerCase();
+          if (nameKey && !productByName.has(nameKey)) productByName.set(nameKey, pItem);
+        });
+        const items = (computeOrderItemsByOrderId(db).get(order.localId) || []).map((it) => {
+          const rawProductId = String(it.productLocalId || it.productId || '').trim();
+          const productNameKey = String(it.productName || '').trim().toLowerCase();
+          const product =
+            (rawProductId ? productMap.get(normalizeProductKey(rawProductId)) : null) ||
+            (it.productCode ? productMap.get(normalizeProductKey(it.productCode)) : null) ||
+            (productNameKey ? productByName.get(productNameKey) : null) ||
+            null;
+          return {
+            ...it,
+            orderLocalId: order.localId,
+            productCode: it.productCode || product?.productCode || '',
+            productName: it.productName || product?.name || '',
+          };
+        });
         const returnIds = returns
           .filter((r) => String(r.orderLocalId || '') === String(order.localId) || String(r.orderCode || '') === String(order.orderCode || ''))
           .map((r) => r.localId);
@@ -2303,21 +2512,63 @@ function handleOfflineRequest(db, { method, path, body }) {
   }
 
   const retMatch = p.match(/^\/api\/returns\/([^/]+)$/);
-  if (m === 'GET' && retMatch) {
+  if (retMatch) {
     const id = decodeURIComponent(retMatch[1]);
     const ret = getReturns(db).find((r) => String(r.localId) === id || String(r.returnCode) === id || String(r._id) === id);
-    if (ret) {
+    if (ret && m === 'GET') {
       const returnItems = computeReturnItemsByReturnId(db).get(ret.localId) || [];
       return { return: { ...ret, _id: ret.localId }, returnItems, exchangeItems: Array.isArray(ret.exchangeItems) ? ret.exchangeItems : [] };
     }
-    const row = db.prepare(`SELECT v FROM kv_store WHERE ns = 'return_bundle' AND k = ?`).get(id);
-    if (!row) return { return: null, returnItems: [], exchangeItems: [] };
-    const parsed = safeJson(row.v, {});
-    return {
-      return: parsed.return || null,
-      returnItems: Array.isArray(parsed.returnItems) ? parsed.returnItems : [],
-      exchangeItems: Array.isArray(parsed.exchangeItems) ? parsed.exchangeItems : [],
-    };
+    if (ret && m === 'PATCH') {
+      const next = {
+        ...ret,
+        ...b,
+        localId: ret.localId,
+        _id: ret.localId,
+        status: b.status ? String(b.status) : ret.status,
+        updatedAt: Date.now(),
+      };
+      putPosDoc(db, 'pos_returns', ret.localId, next);
+      return { ok: true };
+    }
+    const legacyRow = db.prepare(`SELECT k, v FROM kv_store WHERE ns = 'return_bundle' AND k = ?`).get(id);
+    if (!ret && legacyRow && (m === 'PATCH' || m === 'DELETE')) {
+      const parsed = safeJson(legacyRow.v, {});
+      const legacyReturn = parsed.return && typeof parsed.return === 'object' ? parsed.return : {};
+      const nextReturn =
+        m === 'DELETE'
+          ? { ...legacyReturn, status: 'cancelled', updatedAt: Date.now() }
+          : { ...legacyReturn, ...b, updatedAt: Date.now() };
+      db.prepare(`UPDATE kv_store SET v = ? WHERE ns = 'return_bundle' AND k = ?`)
+        .run(JSON.stringify({
+          ...parsed,
+          return: nextReturn,
+          returnItems: Array.isArray(parsed.returnItems) ? parsed.returnItems : [],
+          exchangeItems: Array.isArray(parsed.exchangeItems) ? parsed.exchangeItems : [],
+        }), legacyRow.k);
+      return { ok: true };
+    }
+    if (ret && m === 'DELETE') {
+      const next = {
+        ...ret,
+        localId: ret.localId,
+        _id: ret.localId,
+        status: 'cancelled',
+        updatedAt: Date.now(),
+      };
+      putPosDoc(db, 'pos_returns', ret.localId, next);
+      return { ok: true };
+    }
+    if (m === 'GET') {
+      const row = db.prepare(`SELECT v FROM kv_store WHERE ns = 'return_bundle' AND k = ?`).get(id);
+      if (!row) return { return: null, returnItems: [], exchangeItems: [] };
+      const parsed = safeJson(row.v, {});
+      return {
+        return: parsed.return || null,
+        returnItems: Array.isArray(parsed.returnItems) ? parsed.returnItems : [],
+        exchangeItems: Array.isArray(parsed.exchangeItems) ? parsed.exchangeItems : [],
+      };
+    }
   }
 
   // Admin reports

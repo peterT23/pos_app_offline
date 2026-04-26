@@ -51,6 +51,7 @@ import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import Layout from '../components/Layout';
 import { apiRequest, apiRequestFormData, downloadBlob } from '../utils/apiClient';
 import { isOfflineElectron } from '../../constants/offlineSession';
+import { displayCustomerCode, displayProductCode, displayReturnCode } from '../../utils/codeDisplay';
 
 function formatMoney(n) {
   return (Number(n) || 0).toLocaleString('vi-VN');
@@ -326,7 +327,7 @@ function CustomerDetailExpand({ customer, tab, onTabChange, cache, loadSlice }) 
                 {customer.name || '—'}
               </Typography>
               <Typography color="text.secondary" variant="body2">
-                {customer.customerCode || customer.localId}
+                {displayCustomerCode(customer.customerCode)}
               </Typography>
               <Typography variant="caption" display="block" color="text.secondary" sx={{ mt: 1 }}>
                 Nhóm: {customer.group || '—'}
@@ -695,7 +696,7 @@ function CustomerDetailExpand({ customer, tab, onTabChange, cache, loadSlice }) 
                       invLineItems.map((it) => (
                         <TableRow key={it._id || it.productLocalId}>
                           <TableCell sx={{ fontWeight: 600, color: 'primary.main' }}>
-                            {it.productCode || it.productLocalId || '—'}
+                            {displayProductCode(it.productCode, '')}
                           </TableCell>
                           <TableCell>{it.productName || '—'}</TableCell>
                           <TableCell align="right">{it.qty}</TableCell>
@@ -762,7 +763,7 @@ function CustomerDetailExpand({ customer, tab, onTabChange, cache, loadSlice }) 
                       }}
                     >
                       <Typography variant="body2" fontWeight={700}>
-                        {rd?.return?.returnCode || rd?.return?.localId}
+                        {displayReturnCode(rd?.return?.returnCode)}
                       </Typography>
                       <Typography variant="caption" color="text.secondary">
                         Mã hóa đơn gốc: {rd?.return?.orderCode || rd?.return?.orderLocalId || '—'}
@@ -847,7 +848,7 @@ function CustomerDetailExpand({ customer, tab, onTabChange, cache, loadSlice }) 
                       Mã trả hàng
                     </Typography>
                     <Typography variant="body2" fontWeight={700}>
-                      {salesDetail?.data?.return?.returnCode || salesDetail?.data?.return?.localId || '—'}
+                      {displayReturnCode(salesDetail?.data?.return?.returnCode)}
                     </Typography>
                   </Grid>
                   <Grid size={{ xs: 12, sm: 6 }}>
@@ -939,7 +940,7 @@ function CustomerDetailExpand({ customer, tab, onTabChange, cache, loadSlice }) 
                             }}
                             sx={{ color: 'primary.main', fontWeight: 700 }}
                           >
-                            {it.productCode || it.productLocalId || '—'}
+                            {displayProductCode(it.productCode, '')}
                           </Link>
                         </TableCell>
                         <TableCell>{it.productName}</TableCell>
@@ -985,7 +986,7 @@ function CustomerDetailExpand({ customer, tab, onTabChange, cache, loadSlice }) 
                             }}
                             sx={{ color: 'primary.main', fontWeight: 700 }}
                           >
-                            {it.productCode || it.productLocalId || '—'}
+                            {displayProductCode(it.productCode, '')}
                           </Link>
                         </TableCell>
                         <TableCell>{it.productName}</TableCell>
@@ -1015,7 +1016,7 @@ function CustomerDetailExpand({ customer, tab, onTabChange, cache, loadSlice }) 
               <Box>
                 <Typography variant="caption" color="text.secondary" display="block">Mã hàng</Typography>
                 <Typography variant="body2" fontWeight={700}>
-                  {productMini.productCode || productMini.productLocalId || '—'}
+                  {displayProductCode(productMini.productCode, productMini.barcode)}
                 </Typography>
               </Box>
               <Box>
@@ -1215,7 +1216,7 @@ export default function CustomersPage() {
   const exportExcel = () => {
     const ws = XLSX.utils.json_to_sheet(
       items.map((c) => ({
-        'Mã KH': c.customerCode || c.localId,
+        'Mã KH': c.customerCode || '',
         'Tên': c.name,
         'Điện thoại': c.phone,
         'Nợ': c.debt,
@@ -1635,7 +1636,7 @@ export default function CustomersPage() {
                           </TableCell>
                           <TableCell>
                             <Link component="button" variant="body2" underline="hover" onClick={(e) => { e.stopPropagation(); toggleExpand(row); }}>
-                              {row.customerCode || row.localId}
+                              {displayCustomerCode(row.customerCode)}
                             </Link>
                           </TableCell>
                           <TableCell>{row.name || '—'}</TableCell>

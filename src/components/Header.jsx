@@ -84,9 +84,17 @@ export default function Header({
 
   return (
     <AppBar position="static" sx={{ bgcolor: 'white', color: 'text.primary', boxShadow: 1 }}>
-      <Toolbar sx={{ gap: 2, px: 2 }}>
+      <Toolbar sx={{ gap: 1.5, px: 1.5, minWidth: 0 }}>
         {/* Thanh tìm kiếm bên trái */}
-        <Box sx={{ maxWidth: 400, position: 'relative' }}>
+        <Box
+          sx={{
+            width: 320,
+            minWidth: 280,
+            maxWidth: 360,
+            flexShrink: 0,
+            position: 'relative',
+          }}
+        >
           <TextField
             ref={searchInputRef}
             fullWidth
@@ -139,11 +147,26 @@ export default function Header({
         </Box>
 
         {/* Tab hóa đơn ngay sau search bar */}
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+        <Box sx={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', overflow: 'hidden' }}>
+          <Box
+            sx={{
+              flex: '0 1 auto',
+              maxWidth: '100%',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 0.5,
+              overflowX: 'auto',
+              overflowY: 'hidden',
+              pr: 0.5,
+              '&::-webkit-scrollbar': { height: 6 },
+              '&::-webkit-scrollbar-thumb': { backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: 4 },
+            }}
+          >
           {invoiceTabs.map((tab, index) => (
             <Chip
               key={index}
               label={tab.label}
+              title={tab.label}
               onDelete={invoiceTabs.length > 1 ? () => onCloseInvoice && onCloseInvoice(index) : undefined}
               deleteIcon={<CloseIcon />}
               color={activeInvoiceIndex === tab.id ? 'primary' : 'default'}
@@ -155,16 +178,25 @@ export default function Header({
                 '& .MuiChip-icon': {
                   color: 'inherit',
                 },
+                maxWidth: 120,
+                minWidth: 96,
+                flexShrink: 0,
+                '& .MuiChip-label': {
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                },
               }}
             />
           ))}
-          <IconButton onClick={onNewInvoice} size="small" color="primary">
+          </Box>
+          <IconButton onClick={onNewInvoice} size="small" color="primary" sx={{ ml: 0.25, flexShrink: 0 }}>
             <AddIcon />
           </IconButton>
         </Box>
 
         {/* Các icon bên phải */}
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, ml: 'auto' }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, ml: 'auto', flexShrink: 0 }}>
           <TextField
             select
             size="small"
@@ -189,7 +221,7 @@ export default function Header({
                 return store?.name || 'Chưa có cửa hàng';
               }
             }}
-            sx={{ minWidth: 200 }}
+            sx={{ width: 180, minWidth: 160, maxWidth: 200 }}
           >
             <MenuItem value="" disabled>
               Chọn cửa hàng
@@ -211,7 +243,7 @@ export default function Header({
           <IconButton size="small" onClick={onOpenPrintSettings}>
             <PrintIcon />
           </IconButton>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, ml: 1 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, ml: 0.5 }}>
             <Typography variant="body2" sx={{ fontWeight: 500 }}>
               {userName || 'Nhân viên'}
             </Typography>

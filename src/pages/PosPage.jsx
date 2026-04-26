@@ -13,6 +13,7 @@ import {
   Button,
   Paper,
   Pagination,
+  Checkbox,
   Chip,
   Drawer,
   List,
@@ -78,6 +79,9 @@ import db, {
 } from '../db/posDB';
 import { seedDatabase } from '../db/seedData';
 import { BANK_OPTIONS, BANK_OPTION_MAP } from '../constants/bankOptions';
+import { displayOrderCode, displayReturnCode, displayProductCode } from '../utils/codeDisplay';
+import { isInvoiceDirty, useInvoiceDraft } from './pos/useInvoiceDraft';
+import { usePrintService } from './pos/usePrintService';
 
 const DEFAULT_LOYALTY_SETTINGS = {
   enabled: true,
@@ -114,11 +118,6 @@ export default function PosPage() {
   const cashierName = user?.name || 'Nhân viên';
   const cashierId = user?.id || user?._id || user?.sub || '';
   const effectiveCashierName = user?.name || cashierName;
-  const storeInfo = {
-    name: 'Cơ sở bán hàng',
-    phone: '0900000000',
-    address: 'Địa chỉ cơ sở bán'
-  };
 
   const [printSettingsOpen, setPrintSettingsOpen] = useState(false);
   const [autoPrintEnabled, setAutoPrintEnabled] = useState(true);
@@ -200,6 +199,8 @@ export default function PosPage() {
   const [returnOrders, setReturnOrders] = useState([]);
   const [returnRecordsLoading, setReturnRecordsLoading] = useState(false);
   const [returnRecords, setReturnRecords] = useState([]);
+  const [quickReturnSelection, setQuickReturnSelection] = useState(() => new Set());
+  const [quickReturnProcessing, setQuickReturnProcessing] = useState(false);
   const [returnDetailOpen, setReturnDetailOpen] = useState(false);
   const [returnDetailLoading, setReturnDetailLoading] = useState(false);
   const [returnDetail, setReturnDetail] = useState(null);
@@ -267,6 +268,8 @@ export default function PosPage() {
   const invoiceIdCounterRef = useRef(1);
   const invoiceLabelCounterRef = useRef(2);
   const [activeInvoiceIndex, setActiveInvoiceIndex] = useState(0);
+  const [closeInvoiceConfirmOpen, setCloseInvoiceConfirmOpen] = useState(false);
+  const [pendingCloseTabIndex, setPendingCloseTabIndex] = useState(null);
   const editInitRef = useRef(false);
   const returnInitRef = useRef(null);
 
@@ -312,6 +315,23 @@ export default function PosPage() {
   const pointPaymentEnabledByInvoice = Boolean(currentInvoice.pointPaymentEnabled);
   const pointPaymentPoints = Number(currentInvoice.pointPaymentPoints || 0);
   const discountType = currentInvoice.discountType || 'vnd';
+
+  const {
+    restoreDraftDialogOpen,
+    pendingDraftData,
+    closeRestoreDraftDialog,
+    discardPendingDraft,
+    applyPendingDraft,
+  } = useInvoiceDraft({
+    invoiceTabs,
+    invoices,
+    activeInvoiceIndex,
+    setInvoiceTabs,
+    setInvoices,
+    setActiveInvoiceIndex,
+    invoiceIdCounterRef,
+    invoiceLabelCounterRef,
+  });
 
   useEffect(() => {
     try {
@@ -381,6 +401,16 @@ export default function PosPage() {
     setStoredStoreId(storeId);
   }, []);
 
+  const storeInfo = useMemo(() => {
+    const selectedStore = stores.find((s) => String(s.storeId || '') === String(selectedStoreId || '')) || stores[0] || null;
+    return {
+      name: selectedStore?.name || 'Cơ sở bán hàng',
+      phone: selectedStore?.phone || '',
+      address: selectedStore?.address || '',
+      website: selectedStore?.website || '',
+    };
+  }, [selectedStoreId, stores]);
+
   const openEditOrderFromAdmin = useCallback(async (orderId) => {
     if (!orderId) return;
     try {
@@ -396,7 +426,7 @@ export default function PosPage() {
 
       // Tạo tab hóa đơn Update_HD...
       const nextId = invoiceIdCounterRef.current;
-      const label = `Update_${order.orderCode || order.localId || ''}`;
+      const label = `Update_${order.orderCode || 'HD'}`;
       invoiceIdCounterRef.current += 1;
       const newTabs = [...invoiceTabs, { label, id: nextId }];
       setInvoiceTabs(newTabs);
@@ -486,6 +516,7 @@ export default function PosPage() {
         return {
           product: {
             localId: it.productLocalId,
+            productCode: it.productCode || p?.productCode || '',
             name: it.productName,
             // Ưu tiên giá bán thực tế (đã giảm) để trả hàng đúng giá đã bán.
             // basePrice có thể = 0 (không set), nên chỉ fallback khi price không có.
@@ -959,7 +990,22 @@ export default function PosPage() {
         })
         .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
 
-      const enriched = orders
+      // Có thể tồn tại bản ghi trùng mã hóa đơn do dữ liệu cũ/sync trước đây.
+      // Giữ 1 bản ghi mới nhất cho mỗi orderCode để tránh hiển thị lặp trong popup chọn hóa đơn trả.
+      const latestOrderByKey = new Map();
+      orders.forEach((order) => {
+        const key = String(order.orderCode || order.localId || '').trim();
+        if (!key) return;
+        const prev = latestOrderByKey.get(key);
+        const prevTs = Number(prev?.updatedAt || prev?.createdAt || 0);
+        const curTs = Number(order.updatedAt || order.createdAt || 0);
+        if (!prev || curTs >= prevTs) {
+          latestOrderByKey.set(key, order);
+        }
+      });
+      const dedupedOrders = Array.from(latestOrderByKey.values());
+
+      const enriched = dedupedOrders
         .filter(order => order.status !== 'returned')
         .map((order) => {
           const customer =
@@ -1003,6 +1049,7 @@ export default function PosPage() {
 
   useEffect(() => {
     if (returnDialogOpen) {
+      setQuickReturnSelection(new Set());
       loadReturnOrders();
     }
   }, [returnDialogOpen]);
@@ -1096,6 +1143,7 @@ export default function PosPage() {
         return {
           product: {
             localId: item.productLocalId,
+            productCode: item.productCode || product?.productCode || '',
             name: item.productName,
             price: item.price,
             barcode: product?.barcode || '',
@@ -1128,6 +1176,165 @@ export default function PosPage() {
       showSnackbar('Không thể tải đơn trả hàng', 'error');
     }
   };
+
+  const toggleQuickReturnSelect = useCallback((orderLocalId) => {
+    if (!orderLocalId) return;
+    setQuickReturnSelection((prev) => {
+      const next = new Set(prev);
+      if (next.has(orderLocalId)) next.delete(orderLocalId);
+      else next.add(orderLocalId);
+      return next;
+    });
+  }, []);
+
+  const toggleQuickReturnSelectAllCurrentPage = useCallback(() => {
+    const ids = returnPageOrders.map((o) => o.localId).filter(Boolean);
+    if (ids.length === 0) return;
+    setQuickReturnSelection((prev) => {
+      const allSelected = ids.every((id) => prev.has(id));
+      const next = new Set(prev);
+      if (allSelected) ids.forEach((id) => next.delete(id));
+      else ids.forEach((id) => next.add(id));
+      return next;
+    });
+  }, [returnPageOrders]);
+
+  const handleQuickReturn = useCallback(async () => {
+    if (quickReturnSelection.size === 0) return;
+    setQuickReturnProcessing(true);
+    try {
+      await db.open();
+      const selectedIds = Array.from(quickReturnSelection);
+      const [allOrders, allOrderItems, allProducts, allCustomers] = await Promise.all([
+        db.orders.where('localId').anyOf(selectedIds).toArray(),
+        db.order_items.where('orderLocalId').anyOf(selectedIds).toArray(),
+        db.products.toArray(),
+        db.customers.toArray(),
+      ]);
+
+      const orderById = new Map(allOrders.map((o) => [o.localId, o]));
+      const productById = new Map(allProducts.map((p) => [p.localId, p]));
+      const customerById = new Map(allCustomers.map((c) => [c.localId, c]));
+      const customerByPhone = new Map(allCustomers.map((c) => [String(c.phone || '').trim(), c]));
+      const orderItemsByOrder = new Map();
+      allOrderItems.forEach((item) => {
+        if (!orderItemsByOrder.has(item.orderLocalId)) orderItemsByOrder.set(item.orderLocalId, []);
+        orderItemsByOrder.get(item.orderLocalId).push(item);
+      });
+
+      let processed = 0;
+      for (const orderLocalId of selectedIds) {
+        const order = orderById.get(orderLocalId);
+        if (!order || String(order.status || '').toLowerCase() === 'returned') continue;
+        const orderItems = orderItemsByOrder.get(orderLocalId) || [];
+        if (orderItems.length === 0) continue;
+
+        const returnLocalId = generateLocalId();
+        // eslint-disable-next-line no-await-in-loop
+        const returnCode = await generateReturnCode();
+        const now = Date.now();
+        const totalReturnAmount = orderItems.reduce((sum, item) => sum + (Number(item.subtotal) || 0), 0);
+        const pointsToDeduct = Math.max(0, Number(order.pointsEarned) || 0);
+
+        const returnRecord = {
+          localId: returnLocalId,
+          returnCode,
+          orderLocalId: order.localId,
+          orderCode: order.orderCode || '',
+          exchangeOrderLocalId: '',
+          exchangeOrderCode: '',
+          cashierId,
+          cashierName: effectiveCashierName,
+          customerLocalId: order.customerLocalId || null,
+          customerPhone: order.customerPhone || null,
+          totalReturnAmount,
+          totalExchangeAmount: 0,
+          netAmount: -totalReturnAmount,
+          paymentMethod: order.paymentMethod || 'cash',
+          amountPaid: 0,
+          createdAt: now,
+          synced: false,
+          exchangeItems: [],
+          pointsDelta: pointsToDeduct > 0 ? -pointsToDeduct : 0,
+          pointsAddedExchange: 0,
+          pointsDeductedReturn: pointsToDeduct,
+        };
+
+        const returnItemRecords = orderItems.map((item) => ({
+          returnLocalId,
+          productLocalId: item.productLocalId,
+          productName: item.productName,
+          price: Number(item.price) || 0,
+          qty: Number(item.qty) || 0,
+          subtotal: Number(item.subtotal) || 0,
+        }));
+
+        // eslint-disable-next-line no-await-in-loop
+        await db.transaction('rw', db.returns, db.return_items, db.products, db.orders, db.order_items, db.customers, async () => {
+          await db.returns.add(returnRecord);
+          if (returnItemRecords.length > 0) {
+            await db.return_items.bulkAdd(returnItemRecords);
+          }
+
+          for (const item of returnItemRecords) {
+            const product = productById.get(item.productLocalId) || (await db.products.get(item.productLocalId));
+            if (!product) continue;
+            const nextStock = (Number(product.stock) || 0) + (Number(item.qty) || 0);
+            await db.products.update(product.localId, {
+              stock: nextStock,
+              updatedAt: now,
+              synced: false,
+            });
+            productById.set(product.localId, { ...product, stock: nextStock });
+          }
+
+          await db.order_items.where('orderLocalId').equals(order.localId).delete();
+          await db.orders.update(order.localId, {
+            status: 'returned',
+            subtotalAmount: 0,
+            totalAmount: 0,
+            updatedAt: now,
+            synced: false,
+          });
+
+          if (pointsToDeduct > 0) {
+            const customer =
+              (order.customerLocalId && customerById.get(order.customerLocalId)) ||
+              (order.customerPhone && customerByPhone.get(String(order.customerPhone || '').trim()));
+            if (customer) {
+              const nextPoints = Math.max(0, (Number(customer.points) || 0) - pointsToDeduct);
+              await db.customers.update(customer.localId, {
+                points: nextPoints,
+                updatedAt: now,
+                synced: false,
+              });
+              const updatedCustomer = { ...customer, points: nextPoints };
+              customerById.set(customer.localId, updatedCustomer);
+              customerByPhone.set(String(customer.phone || '').trim(), updatedCustomer);
+            }
+          }
+        });
+
+        processed += 1;
+      }
+
+      if (processed > 0) {
+        showSnackbar(`Đã trả nhanh ${processed} hóa đơn`, 'success');
+        setQuickReturnSelection(new Set());
+        await loadReturnOrders();
+        syncReturnsToServer().catch((error) => console.warn('Sync returns failed:', error));
+        syncOrdersToServer().catch((error) => console.warn('Sync orders failed:', error));
+        syncMasterToServer().catch((error) => console.warn('Sync master failed:', error));
+      } else {
+        showSnackbar('Không có hóa đơn hợp lệ để trả nhanh', 'warning');
+      }
+    } catch (error) {
+      console.error('Lỗi trả nhanh:', error);
+      showSnackbar('Trả nhanh thất bại', 'error');
+    } finally {
+      setQuickReturnProcessing(false);
+    }
+  }, [cashierId, effectiveCashierName, loadReturnOrders, quickReturnSelection, syncMasterToServer, syncOrdersToServer, syncReturnsToServer]);
 
   const handleUpdateReturnQty = (productLocalId, newQty) => {
     updateCurrentInvoice({
@@ -1255,6 +1462,7 @@ export default function PosPage() {
           const newOrderItems = mergedItems.map(it => ({
             orderLocalId: returnOrder.localId,
             productLocalId: it.product.localId,
+            productCode: it.product.productCode || '',
             productName: it.product.name,
             price: Number(it.product.price) || 0,
             qty: Number(it.qty) || 0,
@@ -1290,6 +1498,7 @@ export default function PosPage() {
             const remainOrderItems = remainingItemsForOrder.map(it => ({
               orderLocalId: returnOrder.localId,
               productLocalId: it.product.localId,
+              productCode: it.product.productCode || '',
               productName: it.product.name,
               price: Number(it.product.price) || 0,
               qty: Number(it.qty) || 0,
@@ -1554,6 +1763,37 @@ export default function PosPage() {
     }));
   };
 
+  const closeInvoiceByTabIndex = useCallback((tabIndex) => {
+    if (invoiceTabs.length <= 1 || tabIndex < 0 || tabIndex >= invoiceTabs.length) return;
+    const newTabs = invoiceTabs.filter((_, i) => i !== tabIndex);
+    const closedInvoiceId = invoiceTabs[tabIndex].id;
+    setInvoiceTabs(newTabs);
+    setInvoices((prev) => {
+      const newInvoices = { ...prev };
+      delete newInvoices[closedInvoiceId];
+      return newInvoices;
+    });
+    if (activeInvoiceIndex === closedInvoiceId) {
+      const nextIndex = tabIndex >= newTabs.length ? newTabs.length - 1 : tabIndex;
+      const nextActiveId = newTabs[nextIndex]?.id ?? newTabs[0]?.id ?? 0;
+      setActiveInvoiceIndex(nextActiveId);
+    }
+  }, [activeInvoiceIndex, invoiceTabs]);
+
+  const handleRequestCloseInvoice = useCallback((tabIndex) => {
+    if (invoiceTabs.length <= 1) return;
+    const tab = invoiceTabs[tabIndex];
+    if (!tab) return;
+    const invoiceId = tab.id;
+    const invoice = invoices[invoiceId];
+    if (!isInvoiceDirty(invoice)) {
+      closeInvoiceByTabIndex(tabIndex);
+      return;
+    }
+    setPendingCloseTabIndex(tabIndex);
+    setCloseInvoiceConfirmOpen(true);
+  }, [closeInvoiceByTabIndex, invoiceTabs, invoices]);
+
   /**
    * Hàm xử lý thêm sản phẩm vào giỏ hàng
    * @param {Object} product - Object sản phẩm cần thêm
@@ -1710,198 +1950,22 @@ export default function PosPage() {
       })
     : returnItems;
 
-  const handlePrintInvoice = async (copiesOverride) => {
-    if (!cartItems || cartItems.length === 0) {
-      showSnackbar('Chưa có sản phẩm để in hóa đơn', 'warning');
-      return;
-    }
-
-    let customer = null;
-    try {
-      await db.open().catch(() => {});
-      if (customerLocalId) {
-        customer = await db.customers.get(customerLocalId);
-      } else if (customerPhone) {
-        customer = await db.customers.where('phone').equals(customerPhone).first();
-      }
-    } catch (error) {
-      console.error('Lỗi tải thông tin khách hàng để in:', error);
-    }
-
-    const customerNameValue = customerName || customer?.name || '';
-    const customerNicknameValue = customer?.nickname || '';
-    const customerPhoneValue = customerPhone || customer?.phone || '';
-    const customerAddressValue = customer?.address?.trim() || '';
-    const customerPointsValue =
-      customer?.points !== undefined && customer?.points !== null
-        ? customer.points
-        : customerPoints;
-
-    const paymentMethodLabel =
-      paymentMethod === 'cash'
-        ? 'Tiền mặt'
-        : paymentMethod === 'bank'
-          ? 'Chuyển khoản'
-          : paymentMethod || '';
-
-    const createdAtLabel = new Date().toLocaleString('vi-VN', { hour12: false });
-
-    const itemsHtml = cartItems
-      .map((item) => {
-        const basePrice = Number(item.product?.price) || 0;
-        const finalPrice = Number(calculateItemFinalPrice(item)) || 0;
-        const hasDiscount = finalPrice < basePrice;
-        const lineTotal = finalPrice * (Number(item.qty) || 0);
-        return `
-          <tr>
-            <td class="item-name">${item.product?.name || ''}</td>
-            <td class="item-qty">${item.qty}</td>
-            <td class="item-price">
-              <div class="price-final">${finalPrice.toLocaleString('vi-VN')}</div>
-              ${hasDiscount ? `<div class="price-original">${basePrice.toLocaleString('vi-VN')}</div>` : ''}
-            </td>
-            <td class="item-total">${lineTotal.toLocaleString('vi-VN')}</td>
-          </tr>
-        `;
-      })
-      .join('');
-
-    const customerInfoRows = [];
-    if (customerNameValue) customerInfoRows.push(`Họ tên: ${customerNameValue}`);
-    if (customerNicknameValue) customerInfoRows.push(`Biệt danh: ${customerNicknameValue}`);
-    if (customerPhoneValue) customerInfoRows.push(`SĐT: ${customerPhoneValue}`);
-    if (customerPointsValue !== undefined && customerPointsValue !== null && customerNameValue) {
-      customerInfoRows.push(`Điểm tích luỹ: ${Number(customerPointsValue) || 0}`);
-    }
-    if (customerAddressValue) customerInfoRows.push(`Địa chỉ: ${customerAddressValue}`);
-
-    const html = `
-      <!doctype html>
-      <html>
-        <head>
-          <meta charset="utf-8" />
-          <title>Hóa đơn bán hàng</title>
-          <style>
-            body { font-family: Arial, sans-serif; color: #111; margin: 0; padding: 16px; }
-            .header { text-align: center; margin-bottom: 12px; }
-            .store-name { font-size: 18px; font-weight: 700; }
-            .store-line { font-size: 12px; margin-top: 2px; }
-            .section { margin-top: 10px; font-size: 12px; }
-            .section-title { font-weight: 600; margin-bottom: 4px; }
-            table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 12px; }
-            th, td { padding: 6px 4px; border-bottom: 1px dashed #ccc; vertical-align: top; }
-            th { text-align: left; font-weight: 600; }
-            .item-qty, .item-price, .item-total { text-align: right; }
-            .price-final { font-weight: 600; }
-            .price-original { color: #666; text-decoration: line-through; font-size: 11px; }
-            .summary { margin-top: 10px; font-size: 12px; }
-            .summary-row { display: flex; justify-content: space-between; margin-top: 4px; }
-            .summary-total { font-weight: 700; font-size: 13px; }
-            .divider { border-top: 1px dashed #ccc; margin: 8px 0; }
-          </style>
-        </head>
-        <body>
-          <div class="header">
-            <div class="store-name">${storeInfo.name}</div>
-            <div class="store-line">SĐT: ${storeInfo.phone}</div>
-            <div class="store-line">Địa chỉ: ${storeInfo.address}</div>
-          </div>
-
-          <div class="section">
-            <div>Thời gian: ${createdAtLabel}</div>
-            <div>Nhân viên: ${cashierName}</div>
-          </div>
-
-          ${customerInfoRows.length > 0 ? `
-            <div class="section">
-              <div class="section-title">Thông tin khách hàng</div>
-              ${customerInfoRows.map((row) => `<div>${row}</div>`).join('')}
-            </div>
-          ` : ''}
-
-          <table>
-            <thead>
-              <tr>
-                <th>Sản phẩm</th>
-                <th class="item-qty">SL</th>
-                <th class="item-price">Giá</th>
-                <th class="item-total">Thành tiền</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${itemsHtml}
-            </tbody>
-          </table>
-
-          <div class="summary">
-            <div class="divider"></div>
-            <div class="summary-row summary-total">
-              <span>Tổng tiền thanh toán</span>
-              <span>${totalAmount.toLocaleString('vi-VN')}</span>
-            </div>
-            <div class="summary-row">
-              <span>Phương thức thanh toán</span>
-              <span>${paymentMethodLabel || '-'}</span>
-            </div>
-          </div>
-        </body>
-      </html>
-    `;
-
-    const totalCopies = Math.max(1, Number(copiesOverride || printCopies) || 1);
-    let remainingCopies = totalCopies;
-
-    const iframe = document.createElement('iframe');
-    iframe.style.position = 'fixed';
-    iframe.style.right = '0';
-    iframe.style.bottom = '0';
-    iframe.style.width = '0';
-    iframe.style.height = '0';
-    iframe.style.border = '0';
-    iframe.setAttribute('aria-hidden', 'true');
-    document.body.appendChild(iframe);
-
-    const printDocument = () => iframe.contentWindow?.document;
-    const cleanup = () => {
-      setTimeout(() => {
-        iframe.remove();
-      }, 0);
-    };
-
-    const triggerPrint = () => {
-      if (remainingCopies <= 0) {
-        cleanup();
-        return;
-      }
-      remainingCopies -= 1;
-      iframe.contentWindow?.focus();
-      iframe.contentWindow?.print();
-    };
-
-    const doc = printDocument();
-    if (!doc) {
-      showSnackbar('Không thể mở cửa sổ in hóa đơn', 'error');
-      cleanup();
-      return;
-    }
-    doc.open();
-    doc.write(html);
-    doc.close();
-
-    iframe.onload = () => {
-      const win = iframe.contentWindow;
-      if (win) {
-        win.onafterprint = () => {
-          if (remainingCopies > 0) {
-            setTimeout(triggerPrint, 150);
-          } else {
-            cleanup();
-          }
-        };
-      }
-      setTimeout(triggerPrint, 200);
-    };
-  };
+  const { handlePrintInvoice } = usePrintService({
+    cartItems,
+    customerLocalId,
+    customerPhone,
+    customerName,
+    customerPoints,
+    orderNote,
+    paymentMethod,
+    totalAmount,
+    printCopies,
+    storeInfo,
+    cashierName,
+    calculateItemFinalPrice,
+    showSnackbar,
+    db,
+  });
 
   const buildReportRange = useCallback(() => {
     if (reportType === 'day') {
@@ -2214,6 +2278,7 @@ export default function PosPage() {
             note: orderNote || '',
             items: cartItems.map((item) => ({
               productLocalId: item.product.localId,
+              productCode: item.product.productCode || '',
               productName: item.product.name,
               basePrice: Number(item.product.price) || 0,
               discount: Number(item.discount) || 0,
@@ -2318,6 +2383,7 @@ export default function PosPage() {
       const orderItems = cartItems.map(item => ({
         orderLocalId: orderLocalId,
         productLocalId: item.product.localId,
+        productCode: item.product.productCode || '',
         productName: item.product.name,
         price: item.product.price,
         qty: item.qty,
@@ -2457,9 +2523,7 @@ export default function PosPage() {
       // .bulkAdd(): Thêm nhiều records cùng lúc (nhanh hơn add từng cái)
       await db.order_items.bulkAdd(orderItems);
 
-      if (autoPrintEnabled) {
-        await handlePrintInvoice(printCopies);
-      }
+      await handlePrintInvoice(printCopies);
 
       syncOrdersToServer([orderLocalId]).catch((error) => {
         console.warn('Sync orders failed:', error);
@@ -2695,27 +2759,7 @@ export default function PosPage() {
             
             setActiveInvoiceIndex(nextId);
           }}
-          onCloseInvoice={(index) => {
-            if (invoiceTabs.length > 1) {
-              const newTabs = invoiceTabs.filter((_, i) => i !== index);
-              setInvoiceTabs(newTabs);
-              
-              // Xóa state của hóa đơn đã đóng
-              const closedInvoiceId = invoiceTabs[index].id;
-              setInvoices(prev => {
-                const newInvoices = { ...prev };
-                delete newInvoices[closedInvoiceId];
-                return newInvoices;
-              });
-              
-              // Chuyển sang hóa đơn khác nếu đang ở hóa đơn bị đóng
-              if (activeInvoiceIndex === closedInvoiceId) {
-                const nextIndex = index >= newTabs.length ? newTabs.length - 1 : index;
-                const nextActiveId = newTabs[nextIndex]?.id ?? newTabs[0]?.id ?? 0;
-                setActiveInvoiceIndex(nextActiveId);
-              }
-            }
-          }}
+          onCloseInvoice={handleRequestCloseInvoice}
           onAddToCart={handleAddToCart}
         />
       </Box>
@@ -3849,7 +3893,7 @@ export default function PosPage() {
                                   sx={{ color: 'primary.main', fontWeight: 600, textAlign: 'left', cursor: 'pointer' }}
                                   underline="hover"
                                 >
-                                  {order?.orderCode || order?.localId || ''}
+                                  {displayOrderCode(order?.orderCode)}
                                 </Link>
                               </TableCell>
                               <TableCell>{createdAtLabel}</TableCell>
@@ -4043,6 +4087,78 @@ export default function PosPage() {
           <Button onClick={() => setPrintSettingsOpen(false)}>Bỏ qua</Button>
           <Button variant="contained" onClick={() => setPrintSettingsOpen(false)}>
             Xong
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={closeInvoiceConfirmOpen}
+        onClose={() => {
+          setCloseInvoiceConfirmOpen(false);
+          setPendingCloseTabIndex(null);
+        }}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>Xác nhận đóng hóa đơn</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2">
+            Hóa đơn này đang có dữ liệu tính tiền. Bạn muốn hủy hóa đơn này?
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button
+            onClick={() => {
+              setCloseInvoiceConfirmOpen(false);
+              setPendingCloseTabIndex(null);
+            }}
+          >
+            Bỏ qua
+          </Button>
+          <Button
+            color="error"
+            variant="contained"
+            onClick={() => {
+              if (pendingCloseTabIndex != null) {
+                closeInvoiceByTabIndex(pendingCloseTabIndex);
+              }
+              setCloseInvoiceConfirmOpen(false);
+              setPendingCloseTabIndex(null);
+            }}
+          >
+            Đồng ý hủy
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={restoreDraftDialogOpen}
+        onClose={closeRestoreDraftDialog}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>Khôi phục hóa đơn đang làm dở</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2">
+            Hệ thống phát hiện có hóa đơn nháp chưa hoàn thành. Bạn muốn tiếp tục các hóa đơn này?
+          </Typography>
+          {pendingDraftData?.savedAt ? (
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
+              Lưu gần nhất: {new Date(pendingDraftData.savedAt).toLocaleString('vi-VN', { hour12: false })}
+            </Typography>
+          ) : null}
+        </DialogContent>
+        <DialogActions>
+          <Button
+            onClick={discardPendingDraft}
+          >
+            Bỏ qua
+          </Button>
+          <Button
+            variant="contained"
+            onClick={applyPendingDraft}
+          >
+            Tiếp tục
           </Button>
         </DialogActions>
       </Dialog>
@@ -4475,6 +4591,20 @@ export default function PosPage() {
                     <TableRow>
                       {returnDialogTab === 0 ? (
                         <>
+                          <TableCell padding="checkbox">
+                            <Checkbox
+                              size="small"
+                              checked={
+                                returnPageOrders.length > 0 &&
+                                returnPageOrders.every((order) => quickReturnSelection.has(order.localId))
+                              }
+                              indeterminate={
+                                returnPageOrders.some((order) => quickReturnSelection.has(order.localId)) &&
+                                !returnPageOrders.every((order) => quickReturnSelection.has(order.localId))
+                              }
+                              onChange={toggleQuickReturnSelectAllCurrentPage}
+                            />
+                          </TableCell>
                           <TableCell>Mã hóa đơn</TableCell>
                           <TableCell>Thời gian</TableCell>
                           <TableCell>Nhân viên</TableCell>
@@ -4499,7 +4629,7 @@ export default function PosPage() {
                     {returnDialogTab === 0 ? (
                       returnOrdersLoading ? (
                         <TableRow>
-                          <TableCell colSpan={7}>
+                          <TableCell colSpan={8}>
                             <Box sx={{ py: 4, display: 'flex', justifyContent: 'center' }}>
                               <CircularProgress size={24} />
                             </Box>
@@ -4507,7 +4637,7 @@ export default function PosPage() {
                         </TableRow>
                       ) : filteredReturnOrders.length === 0 ? (
                         <TableRow>
-                          <TableCell colSpan={7}>
+                          <TableCell colSpan={8}>
                             <Typography variant="body2" color="text.secondary">
                               Không tìm thấy hóa đơn phù hợp
                             </Typography>
@@ -4523,8 +4653,15 @@ export default function PosPage() {
                           const returnRecords = order.returnRecords || [];
                           return (
                             <TableRow key={order.localId || order.orderCode}>
+                              <TableCell padding="checkbox">
+                                <Checkbox
+                                  size="small"
+                                  checked={quickReturnSelection.has(order.localId)}
+                                  onChange={() => toggleQuickReturnSelect(order.localId)}
+                                />
+                              </TableCell>
                               <TableCell sx={{ color: 'primary.main', fontWeight: 600 }}>
-                                {order.orderCode || order.localId}
+                                {order.orderCode || '—'}
                               </TableCell>
                               <TableCell>{createdAtLabel}</TableCell>
                               <TableCell>{cashierName}</TableCell>
@@ -4545,7 +4682,7 @@ export default function PosPage() {
                                         }}
                                         sx={{ color: 'primary.main', textAlign: 'left', cursor: 'pointer' }}
                                       >
-                                        {rec.returnCode || rec.localId}
+                                        {rec.returnCode || '—'}
                                       </Link>
                                     ))}
                                   </Box>
@@ -4599,7 +4736,7 @@ export default function PosPage() {
                               onClick={() => handleOpenReturnDetail(record)}
                             >
                               <TableCell sx={{ color: 'primary.main', fontWeight: 600 }}>
-                                {record.returnCode || record.localId}
+                                {displayReturnCode(record.returnCode)}
                               </TableCell>
                               <TableCell>{record.orderCode || ''}</TableCell>
                               <TableCell>{record.exchangeOrderCode || ''}</TableCell>
@@ -4664,7 +4801,13 @@ export default function PosPage() {
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setReturnDialogOpen(false)}>Đóng</Button>
-          <Button variant="contained">Trả nhanh</Button>
+          <Button
+            variant="contained"
+            disabled={returnDialogTab !== 0 || quickReturnSelection.size === 0 || quickReturnProcessing}
+            onClick={handleQuickReturn}
+          >
+            {quickReturnProcessing ? 'Đang trả nhanh...' : 'Trả nhanh'}
+          </Button>
         </DialogActions>
       </Dialog>
 
@@ -4841,7 +4984,7 @@ export default function PosPage() {
                   <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
                     <Typography variant="body2">
                       Mã hóa đơn:{' '}
-                      <strong>{orderHistoryDetail?.orderCode || orderHistoryDetail?.localId || ''}</strong>
+                      <strong>{orderHistoryDetail?.orderCode || '—'}</strong>
                     </Typography>
                     <Typography variant="body2">
                       Thời gian bán: <strong>{createdAtLabel || '-'}</strong>
@@ -4911,7 +5054,7 @@ export default function PosPage() {
                               }}
                               sx={{ color: 'primary.main', fontWeight: 700 }}
                             >
-                              {it.productCode || it.productLocalId || '—'}
+                              {it.productCode || '—'}
                             </Link>
                           </TableCell>
                           <TableCell>{it.productName || '—'}</TableCell>
@@ -4938,7 +5081,7 @@ export default function PosPage() {
                     const returnCreatedAtLabel = rd?.createdAt
                       ? new Date(rd.createdAt).toLocaleString('vi-VN', { hour12: false })
                       : '';
-                    const returnCode = rd?.returnCode || rd?.localId || '';
+                    const returnCode = displayReturnCode(rd?.returnCode);
                     return (
                       <Box
                         key={`${returnCode}-${idx}`}
@@ -5007,7 +5150,7 @@ export default function PosPage() {
                                       }}
                                       sx={{ color: 'primary.main', fontWeight: 700 }}
                                     >
-                                      {it2.productCode || it2.productLocalId || '—'}
+                                      {it2.productCode || '—'}
                                     </Link>
                                   </TableCell>
                                   <TableCell>{it2.productName || '—'}</TableCell>
@@ -5051,7 +5194,7 @@ export default function PosPage() {
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.2, pt: 0.5 }}>
               <Typography variant="body2" color="text.secondary">Mã hàng</Typography>
               <Typography variant="body2" fontWeight={700}>
-                {productMini.productCode || productMini.productLocalId || '—'}
+                {displayProductCode(productMini.productCode, productMini.barcode)}
               </Typography>
               <Typography variant="body2" color="text.secondary">Tên hàng</Typography>
               <Typography variant="body2">{productMini.productName || '—'}</Typography>

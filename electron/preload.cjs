@@ -10,4 +10,5 @@ contextBridge.exposeInMainWorld('posOffline', {
   authLogin: (identifier, password) => ipcRenderer.invoke('auth:login', { identifier, password }),
   offlineApi: (method, path, body) => ipcRenderer.invoke('offline:api', { method, path, body }),
   posDb: (payload) => ipcRenderer.invoke('posDb', payload),
+  printK80: (html, copies) => ipcRenderer.invoke('print:k80', { html, copies }),
 });

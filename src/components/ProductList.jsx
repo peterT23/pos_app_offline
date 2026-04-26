@@ -33,6 +33,7 @@ import {
   Paper,      // Card-like container với shadow
   Button      // Button component
 } from '@mui/material';
+import { displayProductCode } from '../utils/codeDisplay';
 
 // Material-UI Icons
 // Ưu điểm: Icon set đầy đủ, consistent style
@@ -395,7 +396,7 @@ export default function ProductList({
                   {/* Thông tin sản phẩm */}
                   <Box sx={{ flexGrow: 1 }}>
                     <Typography variant="caption" color="text.secondary" sx={{ mb: 0.5, display: 'block' }}>
-                      {item.product.productCode || item.product.barcode || item.product.localId.slice(0, 8)}
+                      {displayProductCode(item.product.productCode, item.product.barcode)}
                     </Typography>
                     <Typography variant="body2" sx={{ fontWeight: 500 }}>
                       {item.product.name}
