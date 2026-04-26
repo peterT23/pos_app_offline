@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  Alert,
   Box,
   Button,
   Dialog,
@@ -9,9 +10,11 @@ import {
   Divider,
   FormControlLabel,
   Grid,
+  IconButton,
   MenuItem,
   Paper,
   Switch,
+  Snackbar,
   Tab,
   Tabs,
   TextField,
@@ -23,6 +26,10 @@ import GroupOutlinedIcon from '@mui/icons-material/GroupOutlined';
 import AccountBalanceWalletOutlinedIcon from '@mui/icons-material/AccountBalanceWalletOutlined';
 import LocalShippingOutlinedIcon from '@mui/icons-material/LocalShippingOutlined';
 import StorefrontOutlinedIcon from '@mui/icons-material/StorefrontOutlined';
+import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
+import HistoryOutlinedIcon from '@mui/icons-material/HistoryOutlined';
+import DeleteOutlineOutlinedIcon from '@mui/icons-material/DeleteOutlineOutlined';
+import CloseOutlinedIcon from '@mui/icons-material/CloseOutlined';
 import { useLocation } from 'react-router-dom';
 import Layout from '../components/Layout';
 import { apiRequest } from '../utils/apiClient';
@@ -59,6 +66,11 @@ const UTIL_SECTIONS = [
 ];
 
 const STORE_SECTIONS = [{ key: 'store-info', label: 'Thông tin cửa hàng', icon: <StorefrontOutlinedIcon fontSize="small" /> }];
+const DATA_SECTIONS = [
+  { key: 'closing', label: 'Khóa sổ', icon: <LockOutlinedIcon fontSize="small" /> },
+  { key: 'audit-log', label: 'Lịch sử thao tác', icon: <HistoryOutlinedIcon fontSize="small" /> },
+  { key: 'data-history', label: 'Xóa dữ liệu gian hàng', icon: <DeleteOutlineOutlinedIcon fontSize="small" /> },
+];
 
 export default function AdminSettingsPage() {
   const location = useLocation();
@@ -68,6 +80,29 @@ export default function AdminSettingsPage() {
   const [pointDialogOpen, setPointDialogOpen] = useState(false);
   const [pointDialogTab, setPointDialogTab] = useState('info');
   const [loyaltySettings, setLoyaltySettings] = useState(DEFAULT_LOYALTY_SETTINGS);
+  const [cleanupDialogOpen, setCleanupDialogOpen] = useState(false);
+  const [cleanupDialogTab, setCleanupDialogTab] = useState('schedule');
+  const [cleanupScopeDialogOpen, setCleanupScopeDialogOpen] = useState(false);
+  const [cleanupConfirmDialogOpen, setCleanupConfirmDialogOpen] = useState(false);
+  const [cleanupPeriodDialogOpen, setCleanupPeriodDialogOpen] = useState(false);
+  const [cleanupMode, setCleanupMode] = useState('full');
+  const [cleanupConfirmChecked, setCleanupConfirmChecked] = useState(false);
+  const [cleanupRunning, setCleanupRunning] = useState(false);
+  const [cleanupHistory, setCleanupHistory] = useState([]);
+  const [cleanupSchedules, setCleanupSchedules] = useState([]);
+  const [cleanupNotice, setCleanupNotice] = useState({ open: false, type: 'success', message: '' });
+  const [deleteHistoryDialogOpen, setDeleteHistoryDialogOpen] = useState(false);
+  const [deleteHistoryTarget, setDeleteHistoryTarget] = useState(null);
+  const [cleanupForm, setCleanupForm] = useState({
+    periodType: 'day',
+    date: '',
+    month: '',
+    quarter: 1,
+    year: new Date().getFullYear(),
+    lunarYear: new Date().getFullYear(),
+    runMode: 'now',
+    runAt: '',
+  });
 
   const loadSettings = useCallback(async () => {
     setLoading(true);
@@ -90,8 +125,28 @@ export default function AdminSettingsPage() {
     const section = String(params.get('section') || params.get('SettingType') || '').toLowerCase();
     if (section === 'customers' || section === 'customer') {
       setActiveSection('customers');
+    } else if (section.includes('data')) {
+      setActiveSection('data-history');
     }
   }, [location.search]);
+
+  const loadCleanupHistory = useCallback(async () => {
+    try {
+      const res = await apiRequest('/api/data-cleanup/history');
+      setCleanupHistory(Array.isArray(res?.items) ? res.items : []);
+    } catch {
+      setCleanupHistory([]);
+    }
+  }, []);
+
+  const loadCleanupSchedules = useCallback(async () => {
+    try {
+      const res = await apiRequest('/api/data-cleanup/schedules');
+      setCleanupSchedules(Array.isArray(res?.items) ? res.items : []);
+    } catch {
+      setCleanupSchedules([]);
+    }
+  }, []);
 
   const saveSettings = useCallback(
     async (next) => {
@@ -172,10 +227,51 @@ export default function AdminSettingsPage() {
               <SidebarItem key={item.key} item={item} onClick={() => setActiveSection(item.key)} />
             ))}
           </Box>
+          <Typography variant="caption" color="text.secondary" sx={{ px: 1, mt: 1, display: 'block' }}>
+            Dữ liệu
+          </Typography>
+          <Box sx={{ mt: 0.5 }}>
+            {DATA_SECTIONS.map((item) => (
+              <SidebarItem
+                key={item.key}
+                item={item}
+                selected={activeSection === item.key}
+                onClick={() => setActiveSection(item.key)}
+              />
+            ))}
+          </Box>
         </Paper>
 
         <Box sx={{ flex: 1, minWidth: 0 }}>
-          {activeSection !== 'customers' ? (
+          {activeSection === 'data-history' ? (
+            <Paper variant="outlined" sx={{ p: 3 }}>
+              <Typography variant="h6" sx={{ fontWeight: 700, mb: 0.5 }}>
+                Xóa dữ liệu gian hàng
+              </Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                Đặt lịch xóa dữ liệu cũ theo thời gian cho 2 chế độ: xóa toàn bộ hoặc xóa giao dịch và thu chi.
+              </Typography>
+              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', border: '1px solid', borderColor: 'divider', borderRadius: 2, p: 2 }}>
+                <Box>
+                  <Typography sx={{ fontWeight: 600 }}>Xóa dữ liệu gian hàng</Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Đặt lịch xóa dữ liệu cũ và nhận thông báo khi hoàn tất xóa.
+                  </Typography>
+                </Box>
+                <Button
+                  variant="outlined"
+                  onClick={async () => {
+                    await loadCleanupHistory();
+                    await loadCleanupSchedules();
+                    setCleanupDialogTab('schedule');
+                    setCleanupDialogOpen(true);
+                  }}
+                >
+                  Xem chi tiết
+                </Button>
+              </Box>
+            </Paper>
+          ) : activeSection !== 'customers' ? (
             <Paper variant="outlined" sx={{ p: 3 }}>
               <Typography variant="h6" sx={{ fontWeight: 700, mb: 1 }}>
                 Đang phát triển
@@ -518,6 +614,398 @@ export default function AdminSettingsPage() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      <Dialog open={cleanupDialogOpen} onClose={() => setCleanupDialogOpen(false)} maxWidth="md" fullWidth>
+        <DialogTitle sx={{ fontWeight: 700 }}>Xóa dữ liệu gian hàng</DialogTitle>
+        <DialogContent sx={{ p: 0 }}>
+          <Tabs value={cleanupDialogTab} onChange={(_e, value) => setCleanupDialogTab(value)} sx={{ px: 3, borderBottom: '1px solid', borderColor: 'divider' }}>
+            <Tab value="schedule" label="Lịch xóa" sx={{ textTransform: 'none' }} />
+            <Tab value="history" label="Lịch sử xóa" sx={{ textTransform: 'none' }} />
+          </Tabs>
+          <Box sx={{ p: 3 }}>
+            {cleanupDialogTab === 'history' ? (
+              <Box sx={{ display: 'grid', gap: 1 }}>
+                <Box sx={{ display: 'flex', justifyContent: 'flex-end' }}>
+                  <Button
+                    color="error"
+                    size="small"
+                    variant="outlined"
+                    onClick={() => {
+                      setDeleteHistoryTarget({ id: '__all__' });
+                      setDeleteHistoryDialogOpen(true);
+                    }}
+                  >
+                    Xóa toàn bộ lịch sử
+                  </Button>
+                </Box>
+                {cleanupHistory.length === 0 ? (
+                  <Typography variant="body2" color="text.secondary">Chưa có lịch sử xóa.</Typography>
+                ) : (
+                  cleanupHistory.map((item) => (
+                    <Paper key={item.id} variant="outlined" sx={{ p: 1.5 }}>
+                      <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 1 }}>
+                        <Box>
+                          <Typography sx={{ fontWeight: 600 }}>
+                            {item.mode === 'full' ? 'Xóa toàn bộ dữ liệu' : 'Xóa giao dịch và thu chi'}
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary">
+                            {new Date(item.executedAt).toLocaleString('vi-VN')}
+                          </Typography>
+                        </Box>
+                        <IconButton
+                          size="small"
+                          onClick={() => {
+                            setDeleteHistoryTarget(item);
+                            setDeleteHistoryDialogOpen(true);
+                          }}
+                          sx={{ mt: -0.5 }}
+                        >
+                          <CloseOutlinedIcon fontSize="small" />
+                        </IconButton>
+                      </Box>
+                      <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                        Đơn hàng: {item.summary?.removedOrders || 0} · Trả hàng: {item.summary?.removedReturns || 0} · Hàng hóa: {item.summary?.removedProducts || 0} · Khách hàng: {item.summary?.removedCustomers || 0}
+                      </Typography>
+                    </Paper>
+                  ))
+                )}
+              </Box>
+            ) : (
+              <Box sx={{ display: 'grid', gap: 1.5 }}>
+                <Paper variant="outlined" sx={{ p: 3, textAlign: 'center' }}>
+                  <Typography variant="h6" sx={{ mb: 0.5 }}>Lịch xóa tự động</Typography>
+                  <Button
+                    variant="text"
+                    onClick={() => {
+                      setCleanupMode('full');
+                      setCleanupScopeDialogOpen(true);
+                    }}
+                    sx={{ textTransform: 'none' }}
+                  >
+                    Thêm lịch
+                  </Button>
+                </Paper>
+                {cleanupSchedules.filter((s) => s.status === 'pending').length === 0 ? (
+                  <Typography variant="body2" color="text.secondary">Chưa có lịch sắp tới.</Typography>
+                ) : (
+                  cleanupSchedules
+                    .filter((s) => s.status === 'pending')
+                    .map((s) => (
+                      <Paper key={s.id} variant="outlined" sx={{ p: 1.5 }}>
+                        <Typography sx={{ fontWeight: 600 }}>
+                          {s.payload?.mode === 'full' ? 'Xóa toàn bộ dữ liệu' : 'Xóa giao dịch và thu chi'}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          Chạy lúc: {new Date(s.runAt).toLocaleString('vi-VN')}
+                        </Typography>
+                      </Paper>
+                    ))
+                )}
+              </Box>
+            )}
+          </Box>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button onClick={() => setCleanupDialogOpen(false)}>Đóng</Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={cleanupScopeDialogOpen} onClose={() => setCleanupScopeDialogOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle sx={{ fontWeight: 700 }}>Chọn phạm vi dữ liệu</DialogTitle>
+        <DialogContent>
+          <Box sx={{ display: 'grid', gap: 2, pt: 1 }}>
+            <Paper
+              variant="outlined"
+              onClick={() => setCleanupMode('full')}
+              sx={{ p: 2, cursor: 'pointer', borderColor: cleanupMode === 'full' ? 'primary.main' : 'divider' }}
+            >
+              <Typography sx={{ fontWeight: 700 }}>Xóa toàn bộ dữ liệu</Typography>
+              <Typography variant="body2" color="text.secondary">
+                Xóa giao dịch, thu chi, hàng hóa, đối tác và dữ liệu liên quan theo kỳ đã chọn (trừ người dùng, chi nhánh).
+              </Typography>
+            </Paper>
+            <Paper
+              variant="outlined"
+              onClick={() => setCleanupMode('transaction')}
+              sx={{ p: 2, cursor: 'pointer', borderColor: cleanupMode === 'transaction' ? 'primary.main' : 'divider' }}
+            >
+              <Typography sx={{ fontWeight: 700 }}>Xóa giao dịch và thu chi</Typography>
+              <Typography variant="body2" color="text.secondary">
+                Chỉ xóa dữ liệu giao dịch/thu chi theo kỳ đã chọn, giữ lại danh mục hàng hóa và đối tác.
+              </Typography>
+            </Paper>
+          </Box>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button onClick={() => setCleanupScopeDialogOpen(false)}>Quay lại</Button>
+          <Button
+            variant="contained"
+            onClick={() => {
+              setCleanupScopeDialogOpen(false);
+              setCleanupConfirmChecked(false);
+              setCleanupConfirmDialogOpen(true);
+            }}
+          >
+            Tiếp tục
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={cleanupConfirmDialogOpen} onClose={() => setCleanupConfirmDialogOpen(false)} maxWidth="md" fullWidth>
+        <DialogTitle sx={{ fontWeight: 700 }}>
+          {cleanupMode === 'full' ? 'Thông tin quan trọng: Xóa toàn bộ dữ liệu' : 'Thông tin quan trọng: Xóa giao dịch và thu chi'}
+        </DialogTitle>
+        <DialogContent>
+          <Typography sx={{ mb: 1.5 }}>
+            {cleanupMode === 'full'
+              ? 'Bạn sắp xóa dữ liệu vận hành theo phạm vi thời gian đã chọn. Dữ liệu bị xóa sẽ không thể phục hồi.'
+              : 'Bạn sắp xóa giao dịch và thu chi theo phạm vi thời gian đã chọn. Hàng hóa, khách hàng, nhà cung cấp vẫn được giữ lại.'}
+          </Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            Hãy chắc chắn đã sao lưu nếu cần trước khi tiếp tục.
+          </Typography>
+          <FormControlLabel
+            control={<Switch checked={cleanupConfirmChecked} onChange={(e) => setCleanupConfirmChecked(e.target.checked)} />}
+            label="Tôi đã đọc và hiểu rõ tác động của việc xóa dữ liệu."
+          />
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button onClick={() => setCleanupConfirmDialogOpen(false)}>Quay lại</Button>
+          <Button
+            variant="contained"
+            disabled={!cleanupConfirmChecked}
+            onClick={() => {
+              setCleanupConfirmDialogOpen(false);
+              setCleanupPeriodDialogOpen(true);
+            }}
+          >
+            Tiếp tục
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={cleanupPeriodDialogOpen} onClose={() => !cleanupRunning && setCleanupPeriodDialogOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle sx={{ fontWeight: 700 }}>Chọn thời gian xóa dữ liệu</DialogTitle>
+        <DialogContent>
+          <Box sx={{ display: 'grid', gap: 2, pt: 1 }}>
+            <TextField
+              select
+              size="small"
+              label="Kiểu thời gian"
+              value={cleanupForm.periodType}
+              onChange={(e) => setCleanupForm((prev) => ({ ...prev, periodType: e.target.value }))}
+            >
+              <MenuItem value="day">Theo ngày</MenuItem>
+              <MenuItem value="month">Theo tháng</MenuItem>
+              <MenuItem value="quarter">Theo quý</MenuItem>
+              <MenuItem value="year">Theo năm dương lịch</MenuItem>
+              <MenuItem value="lunarYear">Theo năm âm lịch</MenuItem>
+            </TextField>
+
+            {cleanupForm.periodType === 'day' && (
+              <TextField
+                size="small"
+                type="date"
+                label="Ngày cần xóa"
+                InputLabelProps={{ shrink: true }}
+                value={cleanupForm.date}
+                onChange={(e) => setCleanupForm((prev) => ({ ...prev, date: e.target.value }))}
+              />
+            )}
+            {cleanupForm.periodType === 'month' && (
+              <TextField
+                size="small"
+                type="month"
+                label="Tháng cần xóa"
+                InputLabelProps={{ shrink: true }}
+                value={cleanupForm.month}
+                onChange={(e) => setCleanupForm((prev) => ({ ...prev, month: e.target.value }))}
+              />
+            )}
+            {cleanupForm.periodType === 'quarter' && (
+              <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 2 }}>
+                <TextField
+                  select
+                  size="small"
+                  label="Quý"
+                  value={cleanupForm.quarter}
+                  onChange={(e) => setCleanupForm((prev) => ({ ...prev, quarter: Number(e.target.value) }))}
+                >
+                  <MenuItem value={1}>Quý 1</MenuItem>
+                  <MenuItem value={2}>Quý 2</MenuItem>
+                  <MenuItem value={3}>Quý 3</MenuItem>
+                  <MenuItem value={4}>Quý 4</MenuItem>
+                </TextField>
+                <TextField
+                  size="small"
+                  type="number"
+                  label="Năm"
+                  value={cleanupForm.year}
+                  onChange={(e) => setCleanupForm((prev) => ({ ...prev, year: Number(e.target.value) || new Date().getFullYear() }))}
+                />
+              </Box>
+            )}
+            {cleanupForm.periodType === 'year' && (
+              <TextField
+                size="small"
+                type="number"
+                label="Năm dương lịch"
+                value={cleanupForm.year}
+                onChange={(e) => setCleanupForm((prev) => ({ ...prev, year: Number(e.target.value) || new Date().getFullYear() }))}
+              />
+            )}
+            {cleanupForm.periodType === 'lunarYear' && (
+              <TextField
+                size="small"
+                type="number"
+                label="Năm âm lịch"
+                value={cleanupForm.lunarYear}
+                onChange={(e) => setCleanupForm((prev) => ({ ...prev, lunarYear: Number(e.target.value) || new Date().getFullYear() }))}
+              />
+            )}
+            <TextField
+              select
+              size="small"
+              label="Hình thức chạy"
+              value={cleanupForm.runMode}
+              onChange={(e) => setCleanupForm((prev) => ({ ...prev, runMode: e.target.value }))}
+            >
+              <MenuItem value="now">Tiến hành ngay</MenuItem>
+              <MenuItem value="schedule">Đặt lịch tự động</MenuItem>
+            </TextField>
+            {cleanupForm.runMode === 'schedule' && (
+              <TextField
+                size="small"
+                type="datetime-local"
+                label="Thời gian chạy"
+                InputLabelProps={{ shrink: true }}
+                value={cleanupForm.runAt}
+                onChange={(e) => setCleanupForm((prev) => ({ ...prev, runAt: e.target.value }))}
+              />
+            )}
+          </Box>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button onClick={() => setCleanupPeriodDialogOpen(false)} disabled={cleanupRunning}>Quay lại</Button>
+          <Button
+            variant="contained"
+            disabled={cleanupRunning}
+            onClick={async () => {
+              setCleanupRunning(true);
+              try {
+                if (cleanupForm.runMode === 'schedule') {
+                  await apiRequest('/api/data-cleanup/schedules', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                      mode: cleanupMode,
+                      runAt: cleanupForm.runAt,
+                      ...cleanupForm,
+                    }),
+                  });
+                  setCleanupNotice({
+                    open: true,
+                    type: 'success',
+                    message: 'Đã tạo lịch xóa dữ liệu thành công.',
+                  });
+                } else {
+                  const res = await apiRequest('/api/data-cleanup/execute', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                      mode: cleanupMode,
+                      ...cleanupForm,
+                    }),
+                  });
+                  const summary = res?.summary || {};
+                  setCleanupNotice({
+                    open: true,
+                    type: 'success',
+                    message: `Xóa thành công. Đơn hàng: ${summary.removedOrders || 0}, Trả hàng: ${summary.removedReturns || 0}, Hàng hóa: ${summary.removedProducts || 0}, Khách hàng: ${summary.removedCustomers || 0}.`,
+                  });
+                }
+                await loadCleanupHistory();
+                await loadCleanupSchedules();
+                setCleanupDialogTab('history');
+                setCleanupPeriodDialogOpen(false);
+                setCleanupDialogOpen(true);
+              } catch (err) {
+                setCleanupNotice({
+                  open: true,
+                  type: 'error',
+                  message: err?.message || 'Không thể thực hiện lịch xóa dữ liệu.',
+                });
+              } finally {
+                setCleanupRunning(false);
+              }
+            }}
+          >
+            {cleanupRunning ? 'Đang tiến hành...' : cleanupForm.runMode === 'schedule' ? 'Lưu lịch' : 'Tiến hành'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+      <Dialog open={deleteHistoryDialogOpen} onClose={() => setDeleteHistoryDialogOpen(false)} maxWidth="xs" fullWidth>
+        <DialogTitle sx={{ fontWeight: 700 }}>Xóa lịch sử xóa dữ liệu</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary">
+            {deleteHistoryTarget?.id === '__all__'
+              ? 'Bạn có chắc muốn xóa toàn bộ lịch sử xóa dữ liệu không?'
+              : 'Bạn có chắc muốn xóa bản ghi lịch sử này không?'}
+          </Typography>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button onClick={() => setDeleteHistoryDialogOpen(false)}>Hủy</Button>
+          <Button
+            color="error"
+            variant="contained"
+            onClick={async () => {
+              if (!deleteHistoryTarget?.id) return;
+              try {
+                if (deleteHistoryTarget.id === '__all__') {
+                  await apiRequest('/api/data-cleanup/history', { method: 'DELETE' });
+                  setCleanupHistory([]);
+                } else {
+                  await apiRequest(`/api/data-cleanup/history/${encodeURIComponent(deleteHistoryTarget.id)}`, {
+                    method: 'DELETE',
+                  });
+                  setCleanupHistory((prev) => prev.filter((item) => String(item.id) !== String(deleteHistoryTarget.id)));
+                }
+                await loadCleanupHistory();
+                setCleanupNotice({
+                  open: true,
+                  type: 'success',
+                  message: deleteHistoryTarget.id === '__all__'
+                    ? 'Đã xóa toàn bộ lịch sử xóa dữ liệu.'
+                    : 'Đã xóa lịch sử xóa dữ liệu.',
+                });
+              } catch (err) {
+                setCleanupNotice({
+                  open: true,
+                  type: 'error',
+                  message: err?.message || 'Không thể xóa lịch sử.',
+                });
+              } finally {
+                setDeleteHistoryDialogOpen(false);
+                setDeleteHistoryTarget(null);
+              }
+            }}
+          >
+            Xóa
+          </Button>
+        </DialogActions>
+      </Dialog>
+      <Snackbar
+        open={cleanupNotice.open}
+        autoHideDuration={4500}
+        onClose={() => setCleanupNotice((prev) => ({ ...prev, open: false }))}
+        anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
+      >
+        <Alert
+          severity={cleanupNotice.type}
+          onClose={() => setCleanupNotice((prev) => ({ ...prev, open: false }))}
+          variant="filled"
+        >
+          {cleanupNotice.message}
+        </Alert>
+      </Snackbar>
     </Layout>
   );
 }

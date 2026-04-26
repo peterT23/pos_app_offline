@@ -78,7 +78,7 @@ export default function AdminHeader() {
       label: 'Dữ liệu và Lịch sử thao tác',
       desc: 'Khóa sổ, Lịch sử thao tác, Xóa dữ liệu',
       icon: <ShieldOutlinedIcon fontSize="small" />,
-      path: '/admin/dashboard',
+      path: '/admin/settings?section=data-history',
     },
   ];
 
@@ -220,20 +220,11 @@ export default function AdminHeader() {
               >
                 Danh sách hàng hóa
               </MenuItem>
-              <MenuItem onClick={() => closeMenu('products')}>Thiết lập giá</MenuItem>
-            </Box>
-            <Box sx={{ minWidth: 180 }}>
-              <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1 }}>
-                Kho hàng
-              </Typography>
-              <MenuItem onClick={() => closeMenu('products')}>Kiểm kho</MenuItem>
-              <MenuItem onClick={() => closeMenu('products')}>Xuất hủy</MenuItem>
             </Box>
             <Box sx={{ minWidth: 220 }}>
               <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1 }}>
                 Nhập hàng
               </Typography>
-              <MenuItem onClick={() => closeMenu('products')}>Hóa đơn đầu vào</MenuItem>
               <MenuItem
                 onClick={() => {
                   closeMenu('products');
@@ -250,7 +241,6 @@ export default function AdminHeader() {
               >
                 Nhập hàng
               </MenuItem>
-              <MenuItem onClick={() => closeMenu('products')}>Trả hàng nhập</MenuItem>
             </Box>
           </Box>
         </Menu>
@@ -263,7 +253,6 @@ export default function AdminHeader() {
           PaperProps={{ sx: { p: 2, borderRadius: 2 } }}
           MenuListProps={{ sx: { p: 0 } }}
         >
-          <MenuItem onClick={() => closeMenu('orders')}>Đặt hàng</MenuItem>
           <MenuItem
             onClick={() => {
               closeMenu('orders');
@@ -273,9 +262,6 @@ export default function AdminHeader() {
             Hóa đơn
           </MenuItem>
           <MenuItem onClick={() => closeMenu('orders')}>Trả hàng</MenuItem>
-          <Box sx={{ borderTop: '1px solid', borderColor: 'divider', my: 1 }} />
-          <MenuItem onClick={() => closeMenu('orders')}>Đối tác giao hàng</MenuItem>
-          <MenuItem onClick={() => closeMenu('orders')}>Vận đơn</MenuItem>
         </Menu>
 
         <Button color="inherit" onClick={(e) => openMenu('customers', e)}>Khách hàng</Button>
@@ -296,63 +282,6 @@ export default function AdminHeader() {
           </MenuItem>
           <MenuItem onClick={() => closeMenu('customers')}>Nhóm khách hàng</MenuItem>
         </Menu>
-        <Button color="inherit" onClick={(e) => openMenu('staff', e)}>Nhân viên</Button>
-        <Menu
-          anchorEl={anchorEls.staff}
-          open={Boolean(anchorEls.staff)}
-          onClose={() => closeMenu('staff')}
-          PaperProps={{ sx: { p: 2, borderRadius: 2 } }}
-          MenuListProps={{ sx: { p: 0 } }}
-        >
-          <MenuItem onClick={() => closeMenu('staff')}>Danh sách nhân viên</MenuItem>
-          <MenuItem onClick={() => closeMenu('staff')}>Lịch làm việc</MenuItem>
-          <MenuItem onClick={() => closeMenu('staff')}>Bảng chấm công</MenuItem>
-          <Box sx={{ borderTop: '1px solid', borderColor: 'divider', my: 1 }} />
-          <MenuItem onClick={() => closeMenu('staff')}>Bảng lương</MenuItem>
-          <MenuItem onClick={() => closeMenu('staff')}>Bảng hoa hồng</MenuItem>
-          <MenuItem onClick={() => closeMenu('staff')}>Thiết lập nhân viên</MenuItem>
-        </Menu>
-
-        <Button color="inherit" onClick={(e) => openMenu('analysis', e)}>Phân tích</Button>
-        <Menu
-          anchorEl={anchorEls.analysis}
-          open={Boolean(anchorEls.analysis)}
-          onClose={() => closeMenu('analysis')}
-          PaperProps={{ sx: { p: 2, borderRadius: 2 } }}
-          MenuListProps={{ sx: { p: 0 } }}
-        >
-          <Box sx={{ display: 'flex', gap: 4 }}>
-            <Box sx={{ minWidth: 180 }}>
-              <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1 }}>
-                Phân tích
-              </Typography>
-              <MenuItem onClick={() => closeMenu('analysis')}>Kinh doanh</MenuItem>
-              <MenuItem onClick={() => closeMenu('analysis')}>Hàng hóa</MenuItem>
-              <MenuItem onClick={() => closeMenu('analysis')}>Khách hàng</MenuItem>
-              <MenuItem onClick={() => closeMenu('analysis')}>Hiệu quả</MenuItem>
-            </Box>
-            <Box sx={{ minWidth: 180 }}>
-              <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1 }}>
-                Báo cáo
-              </Typography>
-              <MenuItem onClick={() => closeMenu('analysis')}>Cuối ngày</MenuItem>
-              <MenuItem onClick={() => closeMenu('analysis')}>Bán hàng</MenuItem>
-              <MenuItem onClick={() => closeMenu('analysis')}>Đặt hàng</MenuItem>
-              <MenuItem onClick={() => closeMenu('analysis')}>Hàng hóa</MenuItem>
-              <MenuItem onClick={() => closeMenu('analysis')}>Khách hàng</MenuItem>
-            </Box>
-            <Box sx={{ minWidth: 180 }}>
-              <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1 }}>
-                Khác
-              </Typography>
-              <MenuItem onClick={() => closeMenu('analysis')}>Nhà cung cấp</MenuItem>
-              <MenuItem onClick={() => closeMenu('analysis')}>Nhân viên</MenuItem>
-              <MenuItem onClick={() => closeMenu('analysis')}>Kênh bán hàng</MenuItem>
-              <MenuItem onClick={() => closeMenu('analysis')}>Tài chính</MenuItem>
-            </Box>
-          </Box>
-        </Menu>
-
         <Box sx={{ ml: 'auto', display: 'flex', gap: 1 }}>
           <Button
             variant="contained"

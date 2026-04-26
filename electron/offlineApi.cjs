@@ -104,6 +104,8 @@ function upsertKvNs(db, ns, id, doc) {
 }
 
 const CUSTOMER_LOYALTY_SETTINGS_KEY = 'customer_loyalty';
+const DATA_CLEANUP_HISTORY_KEY = 'data_cleanup_history';
+const DATA_CLEANUP_SCHEDULES_KEY = 'data_cleanup_schedules';
 
 function defaultCustomerLoyaltySettings() {
   return {
@@ -139,6 +141,195 @@ function getCustomerLoyaltySettings(db) {
     ...parsed,
     _id: CUSTOMER_LOYALTY_SETTINGS_KEY,
   };
+}
+
+function getDataCleanupHistory(db) {
+  const row = db.prepare(`SELECT v FROM kv_store WHERE ns = 'setting' AND k = ?`).get(DATA_CLEANUP_HISTORY_KEY);
+  if (!row) return [];
+  const parsed = safeJson(row.v, []);
+  const items = Array.isArray(parsed) ? parsed : [];
+  let changed = false;
+  const normalized = items.map((item, idx) => {
+    if (item && item.id) return item;
+    changed = true;
+    return {
+      ...item,
+      id: `cleanup_legacy_${normalizeTs(item?.executedAt) || Date.now()}_${idx}`,
+    };
+  });
+  if (changed) {
+    saveDataCleanupHistory(db, normalized);
+  }
+  return normalized;
+}
+
+function saveDataCleanupHistory(db, items) {
+  upsertKvNs(db, 'setting', DATA_CLEANUP_HISTORY_KEY, items);
+}
+
+function getDataCleanupSchedules(db) {
+  const row = db.prepare(`SELECT v FROM kv_store WHERE ns = 'setting' AND k = ?`).get(DATA_CLEANUP_SCHEDULES_KEY);
+  if (!row) return [];
+  const parsed = safeJson(row.v, []);
+  return Array.isArray(parsed) ? parsed : [];
+}
+
+function saveDataCleanupSchedules(db, items) {
+  upsertKvNs(db, 'setting', DATA_CLEANUP_SCHEDULES_KEY, items);
+}
+
+function matchDocByPeriod(doc, inPeriod) {
+  const ts = normalizeTs(doc?.createdAt || doc?.updatedAt || doc?.deletedAt);
+  return ts > 0 ? inPeriod(ts) : false;
+}
+
+function buildCleanupRangePredicate(payload = {}) {
+  const params = new URLSearchParams();
+  const periodType = String(payload.periodType || 'day');
+  params.set('type', periodType);
+  if (payload.date) params.set('date', String(payload.date));
+  if (payload.month) params.set('month', String(payload.month));
+  if (payload.quarter) params.set('quarter', String(payload.quarter));
+  if (payload.year) params.set('year', String(payload.year));
+  if (payload.lunarYear) params.set('lunarYear', String(payload.lunarYear));
+  if (payload.dateFrom) params.set('dateFrom', String(payload.dateFrom));
+  if (payload.dateTo) params.set('dateTo', String(payload.dateTo));
+  return buildPeriodFilter(params);
+}
+
+function runDataCleanup(db, payload = {}) {
+  const mode = String(payload.mode || 'full');
+  const inPeriod = buildCleanupRangePredicate(payload);
+  const summary = {
+    mode,
+    removedOrders: 0,
+    removedReturns: 0,
+    removedProducts: 0,
+    removedCustomers: 0,
+    removedSuppliers: 0,
+    removedPurchaseOrders: 0,
+    removedKvRows: 0,
+  };
+
+  const deletePosByPeriod = (table) => {
+    const rows = db.prepare(`SELECT local_id, doc FROM ${table}`).all();
+    const ids = [];
+    for (const row of rows) {
+      const doc = safeJson(row.doc, null);
+      if (doc && matchDocByPeriod(doc, inPeriod)) {
+        ids.push(row.local_id);
+      }
+    }
+    const del = db.prepare(`DELETE FROM ${table} WHERE local_id = ?`);
+    ids.forEach((id) => del.run(id));
+    return ids;
+  };
+
+  const deleteKvByNsPeriod = (nsList, forceIfNoTs = false) => {
+    const rows = db.prepare(`SELECT ns, k, v FROM kv_store WHERE ns IN (${nsList.map(() => '?').join(',')})`).all(...nsList);
+    const del = db.prepare(`DELETE FROM kv_store WHERE ns = ? AND k = ?`);
+    let count = 0;
+    for (const row of rows) {
+      const doc = safeJson(row.v, null);
+      const matched = doc ? matchDocByPeriod(doc, inPeriod) : false;
+      if (matched || (!doc && forceIfNoTs)) {
+        del.run(row.ns, row.k);
+        count += 1;
+      }
+    }
+    return count;
+  };
+
+  db.exec('BEGIN');
+  try {
+    const deletedOrderIds = deletePosByPeriod('pos_orders');
+    summary.removedOrders = deletedOrderIds.length;
+    if (deletedOrderIds.length) {
+      const delOrderItems = db.prepare('DELETE FROM pos_order_items WHERE order_local_id = ?');
+      deletedOrderIds.forEach((id) => delOrderItems.run(id));
+    }
+
+    const deletedReturnIds = deletePosByPeriod('pos_returns');
+    summary.removedReturns = deletedReturnIds.length;
+    if (deletedReturnIds.length) {
+      const delReturnItems = db.prepare('DELETE FROM pos_return_items WHERE return_local_id = ?');
+      deletedReturnIds.forEach((id) => delReturnItems.run(id));
+    }
+
+    summary.removedKvRows += deleteKvByNsPeriod(['order_bundle', 'return_bundle'], true);
+
+    if (mode === 'full') {
+      summary.removedProducts = deletePosByPeriod('pos_products').length;
+      summary.removedCustomers = deletePosByPeriod('pos_customers').length;
+      summary.removedKvRows += deleteKvByNsPeriod(['product', 'category', 'brand'], true);
+
+      const removedSuppliers = deleteKvByNsPeriod(['supplier', 'supplier_group'], true);
+      summary.removedSuppliers = removedSuppliers;
+      summary.removedKvRows += removedSuppliers;
+    }
+
+    const removedPOs = deleteKvByNsPeriod(['purchase_order'], true);
+    summary.removedPurchaseOrders = removedPOs;
+    summary.removedKvRows += removedPOs;
+
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+
+  const history = getDataCleanupHistory(db);
+  history.unshift({
+    id: `cleanup_${Date.now()}`,
+    source: payload.source || 'manual',
+    scheduleId: payload.scheduleId || '',
+    mode,
+    periodType: payload.periodType || 'day',
+    date: payload.date || '',
+    month: payload.month || '',
+    quarter: payload.quarter || '',
+    year: payload.year || '',
+    lunarYear: payload.lunarYear || '',
+    dateFrom: payload.dateFrom || '',
+    dateTo: payload.dateTo || '',
+    executedAt: new Date().toISOString(),
+    summary,
+  });
+  saveDataCleanupHistory(db, history.slice(0, 100));
+
+  return summary;
+}
+
+function processDueCleanupSchedules(db) {
+  const schedules = getDataCleanupSchedules(db);
+  if (!schedules.length) return schedules;
+  const nowTs = Date.now();
+  const next = schedules.map((item) => ({ ...item }));
+  let changed = false;
+  for (const schedule of next) {
+    if (schedule.status !== 'pending') continue;
+    const runAtTs = normalizeTs(schedule.runAt);
+    if (!runAtTs || runAtTs > nowTs) continue;
+    try {
+      const summary = runDataCleanup(db, {
+        ...schedule.payload,
+        source: 'schedule',
+        scheduleId: schedule.id,
+      });
+      schedule.status = 'done';
+      schedule.executedAt = new Date().toISOString();
+      schedule.summary = summary;
+    } catch (err) {
+      schedule.status = 'failed';
+      schedule.executedAt = new Date().toISOString();
+      schedule.error = String(err?.message || err);
+    }
+    changed = true;
+  }
+  if (changed) {
+    saveDataCleanupSchedules(db, next);
+  }
+  return next;
 }
 
 function migrateLegacyProductsToKv(db) {
@@ -387,10 +578,70 @@ function getPurchaseOrders(db) {
       amountToPay: Number(o.amountToPay) || 0,
       amountPaid: Number(o.amountPaid) || 0,
       items: Array.isArray(o.items) ? o.items : [],
-      createdAt: o.createdAt || Date.now(),
+      createdAt:
+        normalizeTs(o.createdAt) > 946684800000
+          ? normalizeTs(o.createdAt)
+          : (normalizeTs(o.updatedAt) > 946684800000 ? normalizeTs(o.updatedAt) : Date.now()),
       updatedAt: o.updatedAt || o.createdAt || Date.now(),
     }))
     .sort((a, b) => normalizeTs(b.createdAt) - normalizeTs(a.createdAt));
+}
+
+function aggregatePurchaseItems(items) {
+  const map = new Map();
+  for (const item of Array.isArray(items) ? items : []) {
+    const code = String(item?.productCode || '').trim().toLowerCase();
+    const pid = String(item?.productId || '').trim();
+    if (!code && !pid) continue;
+    const qty = Number(item?.quantity) || 0;
+    if (!qty) continue;
+    const key = pid || code;
+    const cur = map.get(key) || {
+      qty: 0,
+      unitPrice: 0,
+      productCode: item?.productCode || '',
+      productId: pid || '',
+    };
+    cur.qty += qty;
+    cur.unitPrice = Number(item?.unitPrice) || cur.unitPrice || 0;
+    if (!cur.productCode) cur.productCode = item?.productCode || '';
+    if (!cur.productId) cur.productId = pid;
+    map.set(key, cur);
+  }
+  return map;
+}
+
+function applyPurchaseOrderStockDelta(db, beforeItems, afterItems) {
+  const before = aggregatePurchaseItems(beforeItems);
+  const after = aggregatePurchaseItems(afterItems);
+  const products = getProducts(db);
+  const byCode = new Map(products.map((pItem) => [String(pItem.productCode || '').trim().toLowerCase(), pItem]));
+  const byId = new Map(
+    products.map((pItem) => [String(pItem.localId || pItem._id || '').trim(), pItem]).filter((entry) => entry[0]),
+  );
+
+  const allKeys = new Set([...before.keys(), ...after.keys()]);
+  allKeys.forEach((key) => {
+    const prevQty = Number(before.get(key)?.qty) || 0;
+    const nextQty = Number(after.get(key)?.qty) || 0;
+    const delta = nextQty - prevQty;
+    if (!delta) return;
+    const info = after.get(key) || before.get(key) || {};
+    const lookupId = String(info.productId || '').trim();
+    const lookupCode = String(info.productCode || '').trim().toLowerCase();
+    const target = (lookupId && byId.get(lookupId)) || (lookupCode && byCode.get(lookupCode));
+    if (!target) return;
+    const nextStock = Math.max(0, (Number(target.stock) || 0) + delta);
+    const nextCost = Number(after.get(key)?.unitPrice) || Number(target.costPrice) || 0;
+    const next = {
+      ...target,
+      stock: nextStock,
+      costPrice: nextCost,
+      updatedAt: Date.now(),
+    };
+    putPosDoc(db, 'pos_products', next.localId || next._id, next);
+    upsertKvNs(db, 'product', next.localId || next._id, next);
+  });
 }
 
 function nextPurchaseOrderCode(db) {
@@ -521,6 +772,7 @@ function handleOfflineRequest(db, { method, path, body }) {
   const m = String(method || 'GET').toUpperCase();
   const { pathname: p, searchParams } = parseQuery(path);
   const b = parseJsonBody(body);
+  processDueCleanupSchedules(db);
 
   if (m === 'POST' && p === '/api/auth/login') {
     const result = handleAuthLogin(db, b.identifier, b.password);
@@ -801,6 +1053,9 @@ function handleOfflineRequest(db, { method, path, body }) {
       updatedAt: Date.now(),
     };
     upsertKvNs(db, 'purchase_order', _id, doc);
+    if (doc.status === 'received') {
+      applyPurchaseOrderStockDelta(db, [], doc.items);
+    }
     return { purchaseOrder: doc };
   }
   if (m === 'POST' && p === '/api/purchase-orders/import-local') {
@@ -809,20 +1064,50 @@ function handleOfflineRequest(db, { method, path, body }) {
     const byCode = new Map(products.map((pItem) => [String(pItem.productCode || '').trim().toLowerCase(), pItem]));
     const validItems = [];
     const lineErrors = [];
+    let createdProducts = 0;
+    let linkedProducts = 0;
     for (const row of rows) {
       const rowNo = Number(row.__row) || 0;
       const code = String(row.productCode || '').trim();
       const name = String(row.productName || '').trim();
       const qty = Number(row.quantity) || 0;
       if (!code && !name && qty <= 0) continue;
-      const product = code ? byCode.get(code.toLowerCase()) : null;
-      if (!product) {
-        lineErrors.push({ row: rowNo, message: 'Mã hàng không có trên hệ thống hoặc ngừng kinh doanh' });
+      if (qty <= 0) {
+        lineErrors.push({ row: rowNo, message: 'Số lượng phải lớn hơn 0' });
         continue;
       }
-      const unitPrice = Number(row.unitPrice) || Number(product.costPrice) || Number(product.price) || 0;
+      let product = code ? byCode.get(code.toLowerCase()) : null;
+      const wasExisting = Boolean(product);
+      const unitPriceFromFile = Number(row.unitPrice) || 0;
       const quantity = qty || 1;
       const discount = Number(row.discount) || 0;
+      if (!product) {
+        const productCode = code || `SP${Date.now()}${Math.floor(Math.random() * 1000)}`;
+        const localId = makeId('p');
+        product = {
+          localId,
+          _id: localId,
+          productCode,
+          name: name || productCode,
+          barcode: String(row.barcode || '').trim(),
+          unit: String(row.unit || 'Cái').trim() || 'Cái',
+          price: unitPriceFromFile,
+          costPrice: unitPriceFromFile,
+          stock: 0,
+          allowPoints: true,
+          synced: true,
+          deleted: false,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        };
+        putPosDoc(db, 'pos_products', localId, product);
+        byCode.set(String(product.productCode || '').trim().toLowerCase(), product);
+        createdProducts += 1;
+      } else {
+        linkedProducts += 1;
+      }
+      const unitPrice = Number(row.unitPrice) || Number(product.costPrice) || Number(product.price) || 0;
+      const discountPercent = Number(row.discountPercent) || 0;
       validItems.push({
         productId: product._id || product.localId || '',
         productCode: product.productCode || code,
@@ -831,14 +1116,380 @@ function handleOfflineRequest(db, { method, path, body }) {
         quantity,
         unitPrice,
         discount,
-        amount: Math.max(0, quantity * unitPrice - discount),
-        note: '',
+        discountPercent,
+        amount: Math.max(0, Number(row.amount) || quantity * unitPrice - discount),
+        note: String(row.note || '').trim(),
         stock: Number(product.stock) || 0,
         sellPrice: Number(product.price) || 0,
         costPrice: Number(product.costPrice) || 0,
+        sourceRow: rowNo || null,
+        importAction: wasExisting ? 'linked' : 'created',
       });
     }
-    return { ok: true, validItems, lineErrors };
+    return { ok: true, validItems, lineErrors, summary: { createdProducts, linkedProducts, totalRows: validItems.length } };
+  }
+  if (m === 'POST' && p === '/api/purchase-orders/import-bulk-preview-local') {
+    return { ok: false, message: 'Tính năng import file phiếu nhập đã được tắt.' };
+    const rows = Array.isArray(b.rows) ? b.rows : [];
+    const lineErrors = [];
+    const summary = {
+      ordersInFile: 0,
+      newOrders: 0,
+      existingOrders: 0,
+      linkedSuppliers: 0,
+      createdSuppliers: 0,
+      updatedProducts: 0,
+      createdProducts: 0,
+      estimatedAmountToPay: 0,
+    };
+    if (!rows.length) return { ok: true, summary, lineErrors };
+
+    const suppliers = getSuppliers(db);
+    const supplierByCode = new Map(
+      suppliers
+        .filter((s) => s.code)
+        .map((s) => [String(s.code || '').trim().toLowerCase(), s]),
+    );
+    const supplierByPhone = new Map(
+      suppliers
+        .filter((s) => s.phone)
+        .map((s) => [String(s.phone || '').trim(), s]),
+    );
+
+    const products = getProducts(db);
+    const productByCode = new Map(
+      products
+        .filter((pItem) => pItem.productCode)
+        .map((pItem) => [String(pItem.productCode || '').trim().toLowerCase(), pItem]),
+    );
+    const existingOrderCodeSet = new Set(
+      getPurchaseOrders(db)
+        .map((po) => String(po.code || '').trim().toLowerCase())
+        .filter(Boolean),
+    );
+    const processedSupplierCodes = new Set();
+    const processedSupplierPhones = new Set();
+    const processedProductCodes = new Set();
+
+    const grouped = new Map();
+    rows.forEach((row) => {
+      const code = String(row.orderCode || '').trim();
+      if (!code) return;
+      const arr = grouped.get(code) || [];
+      arr.push(row);
+      grouped.set(code, arr);
+    });
+    summary.ordersInFile = grouped.size;
+
+    grouped.forEach((groupRows, orderCode) => {
+      if (existingOrderCodeSet.has(orderCode.toLowerCase())) summary.existingOrders += 1;
+      else summary.newOrders += 1;
+
+      const first = groupRows[0] || {};
+      const supplierCodeRaw = String(first.supplierCode || '').trim();
+      const supplierPhoneRaw = String(first.supplierPhone || '').trim();
+      const supplierNameRaw = String(first.supplierName || '').trim();
+      const supplierByCodeFound = supplierCodeRaw ? supplierByCode.get(supplierCodeRaw.toLowerCase()) : null;
+      const supplierByPhoneFound = supplierPhoneRaw ? supplierByPhone.get(supplierPhoneRaw) : null;
+      if (supplierByCodeFound || supplierByPhoneFound) {
+        if (
+          (supplierCodeRaw && !processedSupplierCodes.has(supplierCodeRaw.toLowerCase())) ||
+          (supplierPhoneRaw && !processedSupplierPhones.has(supplierPhoneRaw))
+        ) {
+          summary.linkedSuppliers += 1;
+          if (supplierCodeRaw) processedSupplierCodes.add(supplierCodeRaw.toLowerCase());
+          if (supplierPhoneRaw) processedSupplierPhones.add(supplierPhoneRaw);
+        }
+      } else if (supplierCodeRaw || supplierNameRaw || supplierPhoneRaw) {
+        summary.createdSuppliers += 1;
+        if (supplierCodeRaw) processedSupplierCodes.add(supplierCodeRaw.toLowerCase());
+        if (supplierPhoneRaw) processedSupplierPhones.add(supplierPhoneRaw);
+      }
+
+      for (const row of groupRows) {
+        const rowNo = Number(row.__row) || 0;
+        const productCodeRaw = String(row.productCode || '').trim();
+        const productNameRaw = String(row.productName || '').trim();
+        const quantity = Math.max(0, Number(row.quantity) || 0);
+        if (!productCodeRaw && !productNameRaw) continue;
+        if (!quantity) {
+          lineErrors.push({ row: rowNo, message: 'Số lượng hàng nhập không hợp lệ' });
+          continue;
+        }
+        const unitPrice = Math.max(0, Number(row.unitPrice) || 0);
+        const discount = Math.max(0, Number(row.discount) || 0);
+        const amount = Math.max(0, Number(row.amount) || quantity * unitPrice - discount);
+        summary.estimatedAmountToPay += amount;
+
+        const productCodeKey = productCodeRaw.toLowerCase();
+        if (!processedProductCodes.has(productCodeKey)) {
+          if (productByCode.has(productCodeKey)) summary.updatedProducts += 1;
+          else summary.createdProducts += 1;
+          processedProductCodes.add(productCodeKey);
+        }
+      }
+    });
+    return { ok: true, summary, lineErrors };
+  }
+  if (m === 'POST' && p === '/api/purchase-orders/import-bulk-local') {
+    return { ok: false, message: 'Tính năng import file phiếu nhập đã được tắt.' };
+    const rows = Array.isArray(b.rows) ? b.rows : [];
+    const lineErrors = [];
+    const summary = {
+      importedOrders: 0,
+      linkedSuppliers: 0,
+      createdSuppliers: 0,
+      updatedProducts: 0,
+      createdProducts: 0,
+    };
+    const affectedOrderCodes = [];
+    let affectedMinTs = 0;
+    let affectedMaxTs = 0;
+    if (!rows.length) return { ok: true, summary, lineErrors };
+
+    const suppliers = getSuppliers(db);
+    const supplierById = new Map(suppliers.map((s) => [String(s._id || '').trim(), s]));
+    const supplierByCode = new Map(
+      suppliers
+        .filter((s) => s.code)
+        .map((s) => [String(s.code || '').trim().toLowerCase(), s]),
+    );
+    const supplierByPhone = new Map(
+      suppliers
+        .filter((s) => s.phone)
+        .map((s) => [String(s.phone || '').trim(), s]),
+    );
+
+    const products = getProducts(db);
+    const productByCode = new Map(
+      products
+        .filter((pItem) => pItem.productCode)
+        .map((pItem) => [String(pItem.productCode || '').trim().toLowerCase(), pItem]),
+    );
+
+    const grouped = new Map();
+    rows.forEach((row) => {
+      const code = String(row.orderCode || '').trim();
+      if (!code) return;
+      const arr = grouped.get(code) || [];
+      arr.push(row);
+      grouped.set(code, arr);
+    });
+
+    grouped.forEach((groupRows, orderCode) => {
+      const first = groupRows[0] || {};
+      const supplierCodeRaw = String(first.supplierCode || '').trim();
+      const supplierNameRaw = String(first.supplierName || '').trim();
+      const supplierPhoneRaw = String(first.supplierPhone || '').trim();
+      let supplier = null;
+      if (supplierCodeRaw) supplier = supplierByCode.get(supplierCodeRaw.toLowerCase()) || null;
+      if (!supplier && supplierPhoneRaw) supplier = supplierByPhone.get(supplierPhoneRaw) || null;
+      if (supplier) {
+        summary.linkedSuppliers += 1;
+      } else if (supplierNameRaw || supplierCodeRaw) {
+        const sid = makeId('sup');
+        supplier = {
+          _id: sid,
+          code: supplierCodeRaw || `NCC${String(Date.now()).slice(-6)}`,
+          name: supplierNameRaw || 'Nhà cung cấp',
+          phone: supplierPhoneRaw,
+          email: '',
+          address: '',
+          area: '',
+          ward: '',
+          notes: '',
+          companyName: '',
+          taxCode: '',
+          group: '',
+          status: 'active',
+          currentDebt: 0,
+          totalPurchase: 0,
+          paidAmount: 0,
+          purchaseCount: 0,
+          totalImportedQty: 0,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        };
+        upsertKvNs(db, 'supplier', sid, supplier);
+        supplierByCode.set(String(supplier.code || '').trim().toLowerCase(), supplier);
+        if (supplier.phone) supplierByPhone.set(String(supplier.phone).trim(), supplier);
+        summary.createdSuppliers += 1;
+      }
+
+      const items = [];
+      let amountToPay = 0;
+      const itemMap = new Map();
+      for (const row of groupRows) {
+        const rowNo = Number(row.__row) || 0;
+        const productCodeRaw = String(row.productCode || '').trim();
+        const productNameRaw = String(row.productName || '').trim();
+        const quantity = Math.max(0, Number(row.quantity) || 0);
+        if (!productCodeRaw && !productNameRaw) continue;
+        if (!quantity) {
+          lineErrors.push({ row: rowNo, message: 'Số lượng hàng nhập không hợp lệ' });
+          continue;
+        }
+
+        let product = productByCode.get(productCodeRaw.toLowerCase()) || null;
+        const unitPrice = Math.max(0, Number(row.unitPrice) || 0);
+        const discount = Math.max(0, Number(row.discount) || 0);
+        const amount = Math.max(0, Number(row.amount) || quantity * unitPrice - discount);
+
+        if (!product) {
+          const localId = String(row.localProductId || `p-import-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`);
+          product = {
+            localId,
+            _id: localId,
+            productCode: productCodeRaw || `SP${Date.now()}`,
+            name: productNameRaw || productCodeRaw || 'Hàng hóa',
+            barcode: String(row.barcode || '').trim(),
+            unit: String(row.unit || 'Cái').trim() || 'Cái',
+            price: unitPrice,
+            costPrice: unitPrice,
+            stock: quantity,
+            allowPoints: true,
+            synced: true,
+            deleted: false,
+            createdAt: first.createdAt || Date.now(),
+            updatedAt: Date.now(),
+          };
+          putPosDoc(db, 'pos_products', localId, product);
+          productByCode.set(String(product.productCode || '').trim().toLowerCase(), product);
+          summary.createdProducts += 1;
+        } else {
+          const next = {
+            ...product,
+            name: productNameRaw || product.name || product.productCode,
+            unit: String(row.unit || product.unit || 'Cái').trim() || 'Cái',
+            costPrice: unitPrice || Number(product.costPrice) || 0,
+            stock: (Number(product.stock) || 0) + quantity,
+            updatedAt: Date.now(),
+          };
+          putPosDoc(db, 'pos_products', next.localId || next._id, next);
+          productByCode.set(String(next.productCode || '').trim().toLowerCase(), next);
+          product = next;
+          summary.updatedProducts += 1;
+        }
+
+        amountToPay += amount;
+        const itemKey = `${String(product.productCode || productCodeRaw).trim().toLowerCase()}__${unitPrice}__${discount}`;
+        const existingItem = itemMap.get(itemKey);
+        if (existingItem) {
+          existingItem.quantity += quantity;
+          existingItem.amount += amount;
+          itemMap.set(itemKey, existingItem);
+          continue;
+        }
+        itemMap.set(itemKey, {
+          productId: product._id || product.localId || '',
+          productCode: product.productCode || productCodeRaw,
+          productName: productNameRaw || product.name || '',
+          unit: String(row.unit || product.unit || 'Cái'),
+          quantity,
+          unitPrice,
+          discount,
+          amount,
+          note: String(row.note || '').trim(),
+        });
+      }
+      const mergedItems = Array.from(itemMap.values());
+      const mergedQty = mergedItems.reduce((s, i) => s + (Number(i.quantity) || 0), 0);
+
+      const createdAt = normalizeTs(first.createdAt || first.time || Date.now()) || Date.now();
+      const existing = getPurchaseOrders(db).find((po) => String(po.code || '').trim().toLowerCase() === orderCode.toLowerCase());
+      const importCreatorName = String(first.creatorName || '').trim();
+      const importReceiverName = String(first.receiverName || '').trim();
+      const doc = existing
+        ? {
+            ...existing,
+            supplierId: supplier?._id || existing.supplierId || '',
+            supplierCode: supplier?.code || supplierCodeRaw || existing.supplierCode || '',
+            supplierName: supplier?.name || supplierNameRaw || existing.supplierName || '',
+            creatorName: importCreatorName || existing.creatorName || '',
+            receiverName: importReceiverName || existing.receiverName || '',
+            amountToPay,
+            status: 'received',
+            items: mergedItems,
+            createdAt: normalizeTs(existing.createdAt) > 946684800000 ? normalizeTs(existing.createdAt) : Date.now(),
+            updatedAt: Date.now(),
+          }
+        : {
+            _id: makeId('po'),
+            code: orderCode,
+            supplierId: supplier?._id || '',
+            supplierCode: supplier?.code || supplierCodeRaw || '',
+            supplierName: supplier?.name || supplierNameRaw || '',
+            creatorName: importCreatorName,
+            receiverName: importReceiverName,
+            notes: String(first.notes || '').trim(),
+            amountToPay,
+            amountPaid: 0,
+            status: 'received',
+            items: mergedItems,
+            // Lưu thời gian tạo phiếu theo lúc import để không bị "mất" khỏi bộ lọc tháng hiện tại khi quay lại trang.
+            createdAt: Date.now(),
+            sourceCreatedAt: createdAt,
+            updatedAt: Date.now(),
+          };
+      upsertKvNs(db, 'purchase_order', doc._id, doc);
+      summary.importedOrders += 1;
+      affectedOrderCodes.push(String(doc.code || '').trim());
+      const docTs = normalizeTs(doc.createdAt || doc.updatedAt || Date.now());
+      if (!affectedMinTs || (docTs && docTs < affectedMinTs)) affectedMinTs = docTs;
+      if (!affectedMaxTs || docTs > affectedMaxTs) affectedMaxTs = docTs;
+
+      const prevAmount = Number(existing?.amountToPay || 0);
+      const prevQty = Array.isArray(existing?.items)
+        ? existing.items.reduce((s, i) => s + (Number(i.quantity) || 0), 0)
+        : 0;
+      const oldSupplierId = String(existing?.supplierId || '').trim();
+      const newSupplierId = String(supplier?._id || '').trim();
+      const sameSupplier = !existing || !oldSupplierId || oldSupplierId === newSupplierId;
+
+      if (existing && oldSupplierId && !sameSupplier) {
+        const oldSupplier = supplierById.get(oldSupplierId);
+        if (oldSupplier) {
+          const oldNext = {
+            ...oldSupplier,
+            currentDebt: Number(oldSupplier.currentDebt || 0) - prevAmount,
+            totalPurchase: Number(oldSupplier.totalPurchase || 0) - prevAmount,
+            purchaseCount: Math.max(0, Number(oldSupplier.purchaseCount || 0) - 1),
+            totalImportedQty: Math.max(0, Number(oldSupplier.totalImportedQty || 0) - prevQty),
+            updatedAt: Date.now(),
+          };
+          upsertKvNs(db, 'supplier', oldNext._id, oldNext);
+          supplierById.set(String(oldNext._id || '').trim(), oldNext);
+          supplierByCode.set(String(oldNext.code || '').trim().toLowerCase(), oldNext);
+          if (oldNext.phone) supplierByPhone.set(String(oldNext.phone).trim(), oldNext);
+        }
+      }
+
+      if (supplier) {
+        const deltaAmount = existing ? (amountToPay - prevAmount) : amountToPay;
+        const deltaQty = existing ? (mergedQty - prevQty) : mergedQty;
+        const nextSupplier = {
+          ...supplier,
+          currentDebt: Number(supplier.currentDebt || 0) + deltaAmount,
+          totalPurchase: Number(supplier.totalPurchase || 0) + deltaAmount,
+          purchaseCount: Number(supplier.purchaseCount || 0) + (existing && sameSupplier ? 0 : 1),
+          totalImportedQty: Number(supplier.totalImportedQty || 0) + deltaQty,
+          updatedAt: Date.now(),
+        };
+        upsertKvNs(db, 'supplier', nextSupplier._id, nextSupplier);
+        supplierById.set(String(nextSupplier._id || '').trim(), nextSupplier);
+        supplierByCode.set(String(nextSupplier.code || '').trim().toLowerCase(), nextSupplier);
+        if (nextSupplier.phone) supplierByPhone.set(String(nextSupplier.phone).trim(), nextSupplier);
+      }
+    });
+
+    return {
+      ok: true,
+      summary,
+      lineErrors,
+      affectedOrderCodes,
+      affectedMinTs,
+      affectedMaxTs,
+    };
   }
   if (/^\/api\/purchase-orders\/[^/]+$/.test(p)) {
     const _id = decodeURIComponent(p.split('/').pop());
@@ -861,6 +1512,9 @@ function handleOfflineRequest(db, { method, path, body }) {
         updatedAt: Date.now(),
       };
       upsertKvNs(db, 'purchase_order', _id, next);
+      const beforeReceivedItems = cur.status === 'received' ? cur.items : [];
+      const afterReceivedItems = next.status === 'received' ? next.items : [];
+      applyPurchaseOrderStockDelta(db, beforeReceivedItems, afterReceivedItems);
       return { purchaseOrder: next, alreadyCompleted };
     }
   }
@@ -1165,6 +1819,54 @@ function handleOfflineRequest(db, { method, path, body }) {
     };
     upsertKvNs(db, 'setting', CUSTOMER_LOYALTY_SETTINGS_KEY, next);
     return { settings: next };
+  }
+  if (m === 'GET' && p === '/api/data-cleanup/history') {
+    return { items: getDataCleanupHistory(db) };
+  }
+  if (m === 'DELETE' && /^\/api\/data-cleanup\/history\/[^/]+$/.test(p)) {
+    const id = decodeURIComponent(p.split('/').pop());
+    const current = getDataCleanupHistory(db);
+    const next = current.filter((item) => String(item.id || '') !== String(id));
+    saveDataCleanupHistory(db, next);
+    return { ok: true };
+  }
+  if (m === 'DELETE' && p === '/api/data-cleanup/history') {
+    saveDataCleanupHistory(db, []);
+    return { ok: true };
+  }
+  if (m === 'GET' && p === '/api/data-cleanup/schedules') {
+    const schedules = processDueCleanupSchedules(db);
+    return { items: schedules };
+  }
+  if (m === 'POST' && p === '/api/data-cleanup/schedules') {
+    const mode = String(b.mode || 'full');
+    const runAt = String(b.runAt || '').trim();
+    if (!runAt) return { __error: true, status: 400, message: 'Thieu thoi gian chay lich xoa' };
+    const schedule = {
+      id: `schedule_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      status: 'pending',
+      createdAt: new Date().toISOString(),
+      runAt,
+      payload: {
+        mode,
+        periodType: b.periodType || 'day',
+        date: b.date || '',
+        month: b.month || '',
+        quarter: b.quarter || '',
+        year: b.year || '',
+        lunarYear: b.lunarYear || '',
+        dateFrom: b.dateFrom || '',
+        dateTo: b.dateTo || '',
+      },
+    };
+    const current = getDataCleanupSchedules(db);
+    current.unshift(schedule);
+    saveDataCleanupSchedules(db, current.slice(0, 200));
+    return { ok: true, schedule };
+  }
+  if (m === 'POST' && p === '/api/data-cleanup/execute') {
+    const summary = runDataCleanup(db, b || {});
+    return { ok: true, summary };
   }
 
   // Customers and related details

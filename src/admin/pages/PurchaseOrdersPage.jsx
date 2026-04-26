@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import * as XLSX from 'xlsx';
 import {
   Box,
   Button,
@@ -463,6 +462,7 @@ export default function PurchaseOrdersPage() {
     []
   );
 
+
   const handleOpenEmail = useCallback((order) => {
     if (!order) return;
     setEmailOrder(order);
@@ -854,9 +854,21 @@ export default function PurchaseOrdersPage() {
                                       <Box>
                                         <Typography variant="caption" color="text.secondary">Tên NCC</Typography>
                                         <Typography variant="body2">
-                                          {detailOrder.supplierId ? (
-                                            <Link href="#" onClick={(e) => { e.stopPropagation(); openEdit(detailOrder); }} sx={{ color: 'primary.main' }}>{detailOrder.supplierName || '—'}</Link>
-                                          ) : (detailOrder.supplierName || '—')}
+                                          {(detailOrder.supplierCode || detailOrder.supplierName) ? (
+                                            <Link
+                                              href="#"
+                                              onClick={(e) => {
+                                                e.preventDefault();
+                                                e.stopPropagation();
+                                                navigate(
+                                                  `/admin/suppliers?code=${encodeURIComponent(String(detailOrder.supplierCode || ''))}&name=${encodeURIComponent(String(detailOrder.supplierName || ''))}`,
+                                                );
+                                              }}
+                                              sx={{ color: 'primary.main' }}
+                                            >
+                                              {detailOrder.supplierName || detailOrder.supplierCode || '—'}
+                                            </Link>
+                                          ) : '—'}
                                         </Typography>
                                       </Box>
                                       <Box>
@@ -907,7 +919,20 @@ export default function PurchaseOrdersPage() {
                                           ) : (
                                             detailItemsFiltered.map((item, idx) => (
                                               <TableRow key={item.productId || idx}>
-                                                <TableCell><Link component="button" sx={{ color: 'primary.main', cursor: 'pointer' }}>{item.productCode || '—'}</Link></TableCell>
+                                                <TableCell>
+                                                  <Link
+                                                    component="button"
+                                                    sx={{ color: 'primary.main', cursor: 'pointer' }}
+                                                    onClick={(e) => {
+                                                      e.stopPropagation();
+                                                      navigate(
+                                                        `/admin/products?productCode=${encodeURIComponent(String(item.productCode || ''))}&productName=${encodeURIComponent(String(item.productName || ''))}`,
+                                                      );
+                                                    }}
+                                                  >
+                                                    {item.productCode || '—'}
+                                                  </Link>
+                                                </TableCell>
                                                 <TableCell>{item.productName || '—'}</TableCell>
                                                 <TableCell align="right">{item.quantity ?? '—'}</TableCell>
                                                 <TableCell align="right">{formatMoney(item.unitPrice)}</TableCell>
@@ -1196,6 +1221,7 @@ export default function PurchaseOrdersPage() {
           </Button>
         </DialogActions>
       </Dialog>
+
     </Layout>
   );
 }

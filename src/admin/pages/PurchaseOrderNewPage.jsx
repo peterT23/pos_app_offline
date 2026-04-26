@@ -16,6 +16,7 @@ import {
   FormHelperText,
   IconButton,
   InputLabel,
+  Link,
   MenuItem,
   Paper,
   Popover,
@@ -74,6 +75,7 @@ export default function PurchaseOrderNewPage() {
   const fileInputRef = useRef(null);
   const now = useMemo(() => new Date(), []);
   const userDisplayName = user?.name || user?.email || user?.username || 'Người dùng';
+  const branchDisplayName = user?.branchName || user?.storeName || 'Chi nhánh trung tâm';
   const dateTimeStr = now.toLocaleString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 
   const [products, setProducts] = useState([]);
@@ -101,6 +103,8 @@ export default function PurchaseOrderNewPage() {
   const [editOrder, setEditOrder] = useState(null);
   const [editLoading, setEditLoading] = useState(false);
   const [draftSavedMessage, setDraftSavedMessage] = useState(false);
+  const [restoreDraftDialogOpen, setRestoreDraftDialogOpen] = useState(false);
+  const [pendingDraft, setPendingDraft] = useState(null);
 
   // State cho dialog tạo sản phẩm mới
   const [createProductOpen, setCreateProductOpen] = useState(false);
@@ -155,6 +159,10 @@ export default function PurchaseOrderNewPage() {
   const [excelFileName, setExcelFileName] = useState('');
   const [excelImportErrors, setExcelImportErrors] = useState([]);
   const [excelValidRows, setExcelValidRows] = useState([]);
+  const [excelImportSummary, setExcelImportSummary] = useState(null);
+  const [excelPreviewOpen, setExcelPreviewOpen] = useState(false);
+  const [excelPreviewFilter, setExcelPreviewFilter] = useState('all');
+  const [excelPreviewSearch, setExcelPreviewSearch] = useState('');
 
   // State cho dialog tùy chọn hiển thị
   const [displayOptionsOpen, setDisplayOptionsOpen] = useState(false);
@@ -240,7 +248,7 @@ export default function PurchaseOrderNewPage() {
   }, [categories]);
 
   useEffect(() => {
-    if (!editId || !suppliers.length) return;
+    if (!editId) return;
     let cancelled = false;
     setEditLoading(true);
     apiRequest(`/api/purchase-orders/${editId}`)
@@ -264,12 +272,17 @@ export default function PurchaseOrderNewPage() {
         );
         setNotes(order.notes || '');
         setDiscountAmount(0);
-        if (order.supplierId && suppliers.some((s) => s._id === order.supplierId)) {
-          const s = suppliers.find((x) => x._id === order.supplierId);
-          setSupplierOption(s ? { id: s._id, code: s.code || '', name: s.name || '', label: s.code ? `${s.code} - ${s.name}` : s.name } : null);
-        } else {
-          setSupplierOption(null);
-        }
+        const s = suppliers.find((x) => x._id === order.supplierId)
+          || suppliers.find((x) => String(x.code || '').trim().toLowerCase() === String(order.supplierCode || '').trim().toLowerCase());
+        if (s) setSupplierOption({ id: s._id, code: s.code || '', name: s.name || '', label: s.code ? `${s.code} - ${s.name}` : s.name });
+        else if (order.supplierCode || order.supplierName) {
+          setSupplierOption({
+            id: order.supplierId || '',
+            code: order.supplierCode || '',
+            name: order.supplierName || '',
+            label: [order.supplierCode, order.supplierName].filter(Boolean).join(' - '),
+          });
+        } else setSupplierOption(null);
       })
       .catch(() => {})
       .finally(() => {
@@ -285,21 +298,33 @@ export default function PurchaseOrderNewPage() {
       const raw = localStorage.getItem(DRAFT_STORAGE_KEY);
       if (!raw) return;
       const draft = JSON.parse(raw);
+      const hasWork =
+        (Array.isArray(draft.items) && draft.items.length > 0) ||
+        Boolean(String(draft.notes || '').trim()) ||
+        Boolean(String(draft.orderReference || '').trim());
+      if (hasWork) {
+        setPendingDraft(draft);
+        setRestoreDraftDialogOpen(true);
+      }
       draftRestored.current = true;
-      if (Array.isArray(draft.items) && draft.items.length > 0) {
-        setItems(draft.items);
-      }
-      if (draft.notes != null) setNotes(draft.notes);
-      if (draft.discountAmount != null) setDiscountAmount(Number(draft.discountAmount) || 0);
-      if (draft.orderReference != null) setOrderReference(draft.orderReference || '');
-      if (draft.supplierOption && suppliers.some((s) => s._id === draft.supplierOption.id)) {
-        const s = suppliers.find((x) => x._id === draft.supplierOption.id);
-        if (s) setSupplierOption({ id: s._id, code: s.code || '', name: s.name || '', label: s.code ? `${s.code} - ${s.name}` : s.name });
-      }
     } catch {
       localStorage.removeItem(DRAFT_STORAGE_KEY);
     }
   }, [editId, copyFrom, suppliers]);
+
+  const applyDraft = useCallback((draft) => {
+    if (!draft || typeof draft !== 'object') return;
+    if (Array.isArray(draft.items) && draft.items.length > 0) {
+      setItems(draft.items);
+    }
+    if (draft.notes != null) setNotes(draft.notes);
+    if (draft.discountAmount != null) setDiscountAmount(Number(draft.discountAmount) || 0);
+    if (draft.orderReference != null) setOrderReference(draft.orderReference || '');
+    if (draft.supplierOption && suppliers.some((s) => s._id === draft.supplierOption.id)) {
+      const s = suppliers.find((x) => x._id === draft.supplierOption.id);
+      if (s) setSupplierOption({ id: s._id, code: s.code || '', name: s.name || '', label: s.code ? `${s.code} - ${s.name}` : s.name });
+    }
+  }, [suppliers]);
 
   const copyFromApplied = useRef(false);
   useEffect(() => {
@@ -729,19 +754,42 @@ export default function PurchaseOrderNewPage() {
           setExcelValidRows([]);
           return;
         }
-        const headers = raw[0].map((h) => String(h ?? '').trim());
+        const normalizeHeader = (value) =>
+          String(value ?? '')
+            .toLowerCase()
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .replace(/\s+/g, ' ')
+            .trim();
+        const hasHeaderToken = (row = []) => {
+          const text = row.map((c) => normalizeHeader(c)).join(' | ');
+          const score = [
+            'ma hang',
+            'ten hang',
+            'so luong',
+            'don gia',
+          ].reduce((s, token) => (text.includes(token) ? s + 1 : s), 0);
+          return score >= 2;
+        };
+        const headerRowIndex = Math.max(
+          0,
+          raw.findIndex((r) => hasHeaderToken(r)),
+        );
+        const headers = (raw[headerRowIndex] || []).map((h) => String(h ?? '').trim());
         const headersLower = headers.map((h) => h.toLowerCase());
         const col = (names) => headersLower.findIndex((h) => names.some((n) => (h || '').includes(n)));
-        const idxCode = col(['mã hàng', 'mã', 'code']);
-        const idxName = col(['tên hàng', 'tên', 'name']);
+        const idxCode = col(['mã hàng', 'mã sản phẩm', 'sku', 'product code']);
+        const idxName = col(['tên hàng', 'tên sản phẩm', 'product name']);
         const idxUnit = col(['đơn vị tính', 'đvt', 'unit']);
         const idxPrice = col(['đơn giá', 'unitprice', 'price']);
         const idxDiscountPct = headersLower.findIndex((h) => (h || '').includes('giảm giá') && (h || '').includes('%'));
         const idxDiscount = headersLower.findIndex((h, i) => (h || '').includes('giảm giá') && !(h || '').includes('%') && i !== idxDiscountPct);
         const idxQty = col(['số lượng', 'quantity']);
+        const idxAmount = col(['thành tiền', 'amount']);
+        const idxNote = col(['ghi chú', 'note']);
         const get = (row, i) => (i >= 0 && row[i] != null && row[i] !== '' ? String(row[i]).trim() : '');
         const inputRows = [];
-        for (let r = 1; r < raw.length; r++) {
+        for (let r = headerRowIndex + 1; r < raw.length; r++) {
           const row = raw[r];
           const code = get(row, idxCode);
           const name = get(row, idxName);
@@ -749,6 +797,7 @@ export default function PurchaseOrderNewPage() {
           if (!code && !name && qty <= 0) continue;
           const unitPrice = parseNumber(row[idxPrice] ?? 0);
           let discountFromFile = parseNumber(row[idxDiscount] ?? 0);
+          const discountPercentFromFile = parseNumber(row[idxDiscountPct] ?? 0);
           if (idxDiscountPct >= 0 && (row[idxDiscountPct] != null && row[idxDiscountPct] !== '')) {
             const pct = parseNumber(row[idxDiscountPct] ?? 0);
             if (pct > 0 && unitPrice > 0) discountFromFile = Math.round((unitPrice * (qty || 1) * pct) / 100);
@@ -760,7 +809,10 @@ export default function PurchaseOrderNewPage() {
             unit: get(row, idxUnit),
             unitPrice,
             discount: discountFromFile,
+            discountPercent: discountPercentFromFile,
             quantity: qty,
+            amount: parseNumber(row[idxAmount] ?? 0),
+            note: get(row, idxNote),
           });
         }
         const response = await apiRequest('/api/purchase-orders/import-local', {
@@ -769,21 +821,42 @@ export default function PurchaseOrderNewPage() {
         });
         setExcelImportErrors(Array.isArray(response?.lineErrors) ? response.lineErrors : []);
         setExcelValidRows(Array.isArray(response?.validItems) ? response.validItems : []);
+        setExcelImportSummary(response?.summary || null);
+        setExcelPreviewOpen(Array.isArray(response?.validItems) && response.validItems.length > 0);
       } catch (err) {
         console.error(err);
         setExcelImportErrors([{ row: 0, message: 'Không đọc được file Excel. Vui lòng kiểm tra định dạng.' }]);
         setExcelValidRows([]);
+        setExcelImportSummary(null);
       }
     };
     reader.readAsArrayBuffer(file);
   }, []);
 
   const handleExcelExecute = useCallback(() => {
-    setItems((prev) => [...prev, ...excelValidRows]);
+    setItems((prev) => {
+      const map = new Map();
+      const pushRow = (row) => {
+        const key = `${String(row.productCode || '').trim().toLowerCase()}__${Number(row.unitPrice) || 0}__${Number(row.discount) || 0}`;
+        const existing = map.get(key);
+        if (existing) {
+          const qty = (Number(existing.quantity) || 0) + (Number(row.quantity) || 0);
+          const amount = (Number(existing.amount) || 0) + (Number(row.amount) || 0);
+          map.set(key, { ...existing, quantity: qty, amount });
+          return;
+        }
+        map.set(key, row);
+      };
+      prev.forEach(pushRow);
+      excelValidRows.forEach(pushRow);
+      return Array.from(map.values());
+    });
     setExcelFile(null);
     setExcelFileName('');
     setExcelImportErrors([]);
     setExcelValidRows([]);
+    setExcelImportSummary(null);
+    setExcelPreviewOpen(false);
   }, [excelValidRows]);
 
   const handleExcelCancel = useCallback(() => {
@@ -791,6 +864,8 @@ export default function PurchaseOrderNewPage() {
     setExcelFileName('');
     setExcelImportErrors([]);
     setExcelValidRows([]);
+    setExcelImportSummary(null);
+    setExcelPreviewOpen(false);
   }, []);
 
   const downloadTemplate = useCallback(() => {
@@ -826,6 +901,9 @@ export default function PurchaseOrderNewPage() {
         supplierId: supplierOption?.id || undefined,
         supplierCode: supplierOption?.code || '',
         supplierName: supplierOption?.name || '',
+        creatorName: userDisplayName,
+        receiverName: userDisplayName,
+        branchName: branchDisplayName,
         notes: notes || '',
         amountToPay: Number(amountToPay) || 0,
         status: 'draft',
@@ -855,7 +933,7 @@ export default function PurchaseOrderNewPage() {
     } catch {
       setSaveError('Không lưu được bản nháp');
     }
-  }, [isEditMode, editId, supplierOption, notes, amountToPay, discountAmount, orderReference, buildItemsPayload, navigate]);
+  }, [isEditMode, editId, supplierOption, notes, amountToPay, discountAmount, orderReference, buildItemsPayload, navigate, userDisplayName, branchDisplayName]);
 
   const submitComplete = useCallback(async () => {
     setSaveError('');
@@ -865,6 +943,9 @@ export default function PurchaseOrderNewPage() {
         supplierId: supplierOption?.id || undefined,
         supplierCode: supplierOption?.code || '',
         supplierName: supplierOption?.name || '',
+        creatorName: userDisplayName,
+        receiverName: userDisplayName,
+        branchName: branchDisplayName,
         notes: notes || '',
         amountToPay: Number(amountToPay) || 0,
         status: 'received',
@@ -888,7 +969,7 @@ export default function PurchaseOrderNewPage() {
     } finally {
       setSaving(false);
     }
-  }, [isEditMode, editId, supplierOption, notes, amountToPay, buildItemsPayload, navigate]);
+  }, [isEditMode, editId, supplierOption, notes, amountToPay, buildItemsPayload, navigate, userDisplayName, branchDisplayName]);
 
   const saveEditOrder = useCallback(async () => {
     setSaveError('');
@@ -901,6 +982,9 @@ export default function PurchaseOrderNewPage() {
           supplierId: supplierOption?.id || undefined,
           supplierCode: supplierOption?.code || '',
           supplierName: supplierOption?.name || '',
+          creatorName: userDisplayName,
+          receiverName: userDisplayName,
+          branchName: branchDisplayName,
           notes: notes || '',
           amountToPay: Number(amountToPay) || 0,
           status: 'received',
@@ -913,7 +997,7 @@ export default function PurchaseOrderNewPage() {
     } finally {
       setSaving(false);
     }
-  }, [editId, supplierOption, notes, amountToPay, buildItemsPayload, navigate]);
+  }, [editId, supplierOption, notes, amountToPay, buildItemsPayload, navigate, userDisplayName, branchDisplayName]);
 
   const saveComplete = useCallback(() => {
     if (!supplierOption) {
@@ -933,6 +1017,48 @@ export default function PurchaseOrderNewPage() {
       })),
     [suppliers]
   );
+
+  useEffect(() => {
+    if (isEditMode) return;
+    const hasWork =
+      items.length > 0 ||
+      Boolean(String(notes || '').trim()) ||
+      Boolean(String(orderReference || '').trim()) ||
+      Boolean(supplierOption?.id);
+    if (!hasWork) return;
+    const timer = setTimeout(() => {
+      try {
+        const draft = {
+          supplierOption: supplierOption ? { id: supplierOption.id, code: supplierOption.code, name: supplierOption.name } : null,
+          items: buildItemsPayload(),
+          notes,
+          discountAmount,
+          orderReference,
+          savedAt: new Date().toISOString(),
+        };
+        localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(draft));
+      } catch {
+        // ignore autosave errors
+      }
+    }, 700);
+    return () => clearTimeout(timer);
+  }, [isEditMode, items, notes, orderReference, supplierOption, discountAmount, buildItemsPayload]);
+
+  const excelPreviewRows = useMemo(() => {
+    const term = String(excelPreviewSearch || '').trim().toLowerCase();
+    return (excelValidRows || [])
+      .filter((row) => {
+        if (excelPreviewFilter === 'created') return row.importAction === 'created';
+        if (excelPreviewFilter === 'linked') return row.importAction !== 'created';
+        if (excelPreviewFilter === 'hasNote') return Boolean(String(row.note || '').trim());
+        return true;
+      })
+      .filter((row) => {
+        if (!term) return true;
+        const text = `${row.productCode || ''} ${row.productName || ''}`.toLowerCase();
+        return text.includes(term);
+      });
+  }, [excelValidRows, excelPreviewFilter, excelPreviewSearch]);
 
   return (
     <Layout maxWidth={false}>
@@ -1088,14 +1214,18 @@ export default function PurchaseOrderNewPage() {
                       </TableCell>
                       <TableCell>{actualIndex + 1}</TableCell>
                       <TableCell>
-                        <Typography
-                          component="span"
+                        <Link
+                          component="button"
                           variant="body2"
                           sx={{ color: 'primary.main', cursor: 'pointer', textDecoration: 'underline' }}
-                          onClick={() => {}}
+                          onClick={() =>
+                            navigate(
+                              `/admin/products?productCode=${encodeURIComponent(String(row.productCode || ''))}&productName=${encodeURIComponent(String(row.productName || ''))}`,
+                            )
+                          }
                         >
                           {row.productCode || '—'}
-                        </Typography>
+                        </Link>
                       </TableCell>
                       <TableCell>
                         <Box>
@@ -1219,7 +1349,24 @@ export default function PurchaseOrderNewPage() {
               ) : (
                 <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1.5, width: '100%', maxWidth: 360 }}>
                   <Typography variant="body2" sx={{ fontWeight: 500 }}>{excelFileName}</Typography>
+                  {excelImportSummary && (
+                    <Typography variant="caption" color="text.secondary" sx={{ textAlign: 'center' }}>
+                      Xem trước: {excelImportSummary.totalRows || 0} dòng hợp lệ, liên kết {excelImportSummary.linkedProducts || 0} hàng có sẵn, tạo mới {excelImportSummary.createdProducts || 0} hàng.
+                    </Typography>
+                  )}
                   <Box sx={{ display: 'flex', gap: 1 }}>
+                    <Button
+                      variant="outlined"
+                      onClick={() => {
+                        setExcelPreviewFilter('all');
+                        setExcelPreviewSearch('');
+                        setExcelPreviewOpen(true);
+                      }}
+                      disabled={excelValidRows.length === 0}
+                      sx={{ textTransform: 'none' }}
+                    >
+                      Xem preview
+                    </Button>
                     <Button variant="contained" onClick={handleExcelExecute} disabled={excelValidRows.length === 0} sx={{ textTransform: 'none' }}>
                       Thực hiện
                     </Button>
@@ -1256,8 +1403,26 @@ export default function PurchaseOrderNewPage() {
                 ) : (
                   <>
                     <Typography variant="body2" sx={{ fontWeight: 500 }}>{excelFileName}</Typography>
+                    {excelImportSummary && (
+                      <Typography variant="caption" color="text.secondary">
+                        {excelImportSummary.totalRows || 0} dòng, tạo mới {excelImportSummary.createdProducts || 0} hàng.
+                      </Typography>
+                    )}
                     <Button size="small" variant="contained" onClick={handleExcelExecute} disabled={excelValidRows.length === 0} sx={{ textTransform: 'none' }}>
                       Thực hiện
+                    </Button>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      onClick={() => {
+                        setExcelPreviewFilter('all');
+                        setExcelPreviewSearch('');
+                        setExcelPreviewOpen(true);
+                      }}
+                      disabled={excelValidRows.length === 0}
+                      sx={{ textTransform: 'none' }}
+                    >
+                      Xem preview
                     </Button>
                     <Button size="small" variant="outlined" onClick={handleExcelCancel} sx={{ textTransform: 'none' }}>
                       Hủy
@@ -1284,6 +1449,87 @@ export default function PurchaseOrderNewPage() {
         onChange={handleFileSelect}
       />
         </Paper>
+
+        <Dialog open={excelPreviewOpen} onClose={() => setExcelPreviewOpen(false)} maxWidth="lg" fullWidth>
+          <DialogTitle>Xem trước dữ liệu nhập từ Excel</DialogTitle>
+          <DialogContent>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+              Hiển thị tối đa 200 dòng để đối chiếu trước khi thực hiện.
+            </Typography>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1, flexWrap: 'wrap' }}>
+              <Button size="small" variant={excelPreviewFilter === 'all' ? 'contained' : 'outlined'} onClick={() => setExcelPreviewFilter('all')} sx={{ textTransform: 'none' }}>
+                Tất cả
+              </Button>
+              <Button size="small" variant={excelPreviewFilter === 'created' ? 'contained' : 'outlined'} onClick={() => setExcelPreviewFilter('created')} sx={{ textTransform: 'none' }}>
+                Hàng mới
+              </Button>
+              <Button size="small" variant={excelPreviewFilter === 'linked' ? 'contained' : 'outlined'} onClick={() => setExcelPreviewFilter('linked')} sx={{ textTransform: 'none' }}>
+                Hàng đã có
+              </Button>
+              <Button size="small" variant={excelPreviewFilter === 'hasNote' ? 'contained' : 'outlined'} onClick={() => setExcelPreviewFilter('hasNote')} sx={{ textTransform: 'none' }}>
+                Có ghi chú
+              </Button>
+              <TextField
+                size="small"
+                placeholder="Tìm mã/tên hàng"
+                value={excelPreviewSearch}
+                onChange={(e) => setExcelPreviewSearch(e.target.value)}
+                sx={{ minWidth: 220 }}
+              />
+            </Box>
+            <TableContainer component={Paper} variant="outlined" sx={{ maxHeight: 540 }}>
+              <Table size="small" stickyHeader>
+                <TableHead>
+                  <TableRow>
+                    <TableCell sx={{ fontWeight: 600 }}>Dòng</TableCell>
+                    <TableCell sx={{ fontWeight: 600 }}>Mã hàng</TableCell>
+                    <TableCell sx={{ fontWeight: 600 }}>Tên hàng</TableCell>
+                    <TableCell sx={{ fontWeight: 600 }}>ĐVT</TableCell>
+                    <TableCell sx={{ fontWeight: 600 }} align="right">SL</TableCell>
+                    <TableCell sx={{ fontWeight: 600 }} align="right">Đơn giá</TableCell>
+                    <TableCell sx={{ fontWeight: 600 }} align="right">Giảm giá</TableCell>
+                    <TableCell sx={{ fontWeight: 600 }} align="right">Giảm giá (%)</TableCell>
+                    <TableCell sx={{ fontWeight: 600 }} align="right">Thành tiền</TableCell>
+                    <TableCell sx={{ fontWeight: 600 }}>Ghi chú</TableCell>
+                    <TableCell sx={{ fontWeight: 600 }}>Loại</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {excelPreviewRows.slice(0, 200).map((row, idx) => (
+                    <TableRow key={`${row.productCode || idx}-${idx}`}>
+                      <TableCell>{row.sourceRow || '—'}</TableCell>
+                      <TableCell>{row.productCode || '—'}</TableCell>
+                      <TableCell>{row.productName || '—'}</TableCell>
+                      <TableCell>{row.unit || '—'}</TableCell>
+                      <TableCell align="right">{row.quantity || 0}</TableCell>
+                      <TableCell align="right">{formatMoney(row.unitPrice)}</TableCell>
+                      <TableCell align="right">{formatMoney(row.discount)}</TableCell>
+                      <TableCell align="right">{Number(row.discountPercent || 0).toLocaleString('vi-VN')}</TableCell>
+                      <TableCell align="right">{formatMoney(row.amount)}</TableCell>
+                      <TableCell>{row.note || '—'}</TableCell>
+                      <TableCell>{row.importAction === 'created' ? 'Tạo mới' : 'Đã có'}</TableCell>
+                    </TableRow>
+                  ))}
+                  {excelPreviewRows.length === 0 && (
+                    <TableRow>
+                      <TableCell colSpan={11} align="center" sx={{ py: 2 }}>
+                        Không có dữ liệu khớp bộ lọc
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setExcelPreviewOpen(false)} sx={{ textTransform: 'none' }}>
+              Đóng
+            </Button>
+            <Button variant="contained" onClick={() => { setExcelPreviewOpen(false); handleExcelExecute(); }} disabled={excelValidRows.length === 0} sx={{ textTransform: 'none' }}>
+              Thực hiện
+            </Button>
+          </DialogActions>
+        </Dialog>
 
         {/* Cột phải: Thông tin nhà cung cấp & phiếu (cố định bên phải) */}
         <Paper variant="outlined" sx={{ flex: '0 0 360px', width: 360, p: 2, display: 'flex', flexDirection: 'column', borderLeft: '1px solid', borderColor: 'divider' }}>
@@ -1462,6 +1708,43 @@ export default function PurchaseOrderNewPage() {
             sx={{ textTransform: 'none' }}
           >
             Đồng ý
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={restoreDraftDialogOpen} onClose={() => setRestoreDraftDialogOpen(false)} maxWidth="xs" fullWidth>
+        <DialogTitle>Khôi phục phiếu nhập dở?</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2">
+            Có đơn nhập hàng chưa hoàn thành trước đó. Bạn có muốn tiếp tục với đơn này không?
+          </Typography>
+          {pendingDraft?.savedAt && (
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
+              Lưu gần nhất: {new Date(pendingDraft.savedAt).toLocaleString('vi-VN')}
+            </Typography>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button
+            onClick={() => {
+              setRestoreDraftDialogOpen(false);
+              setPendingDraft(null);
+              localStorage.removeItem(DRAFT_STORAGE_KEY);
+            }}
+            sx={{ textTransform: 'none' }}
+          >
+            Bỏ qua
+          </Button>
+          <Button
+            variant="contained"
+            onClick={() => {
+              applyDraft(pendingDraft);
+              setRestoreDraftDialogOpen(false);
+              setPendingDraft(null);
+            }}
+            sx={{ textTransform: 'none' }}
+          >
+            Tiếp tục
           </Button>
         </DialogActions>
       </Dialog>

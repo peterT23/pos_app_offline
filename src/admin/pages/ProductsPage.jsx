@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Autocomplete,
   Box,
   Button,
   Card,
@@ -284,9 +285,10 @@ export default function ProductsPage() {
 
     setSelectedProductId(target.id);
     setExpandedProductId(target.id);
-    setSearchInputTerm(target.name || target.id);
-    setSearchTerm(target.name || target.id);
-    setListFilterTerm(target.name || target.id);
+    const routedCode = target.raw?.productCode || target.id;
+    setSearchInputTerm(routedCode);
+    setSearchTerm(routedCode);
+    setListFilterTerm(routedCode);
   }, [location.search, products]);
 
   useEffect(() => {
@@ -755,12 +757,14 @@ export default function ProductsPage() {
   };
 
   const handlePickSearchItem = (item) => {
+    const exactCode = item.id || item.raw?.productCode || '';
     setSelectedProductId(item.id);
     setExpandedProductId(item.id);
     setSearchOpen(false);
-    setSearchInputTerm(item.name || item.id);
-    setSearchTerm(item.name || item.id);
-    setListFilterTerm(item.name || item.id);
+    setSearchInputTerm(exactCode || item.name || item.id);
+    setSearchTerm(exactCode || item.name || item.id);
+    // Chọn từ dropdown cần lọc theo mã cụ thể, tránh bị broad-match theo tên.
+    setListFilterTerm(exactCode || item.name || item.id);
     setActiveSearchIndex(-1);
     setSearchNavigated(false);
   };
@@ -870,19 +874,65 @@ export default function ProductsPage() {
   };
 
   const categoryTree = useMemo(() => {
-    const map = new Map();
+    const sourceMap = new Map();
     categories.forEach((cat) => {
-      map.set(cat._id, { ...cat, children: [] });
+      sourceMap.set(cat._id, cat);
     });
-    const roots = [];
-    map.forEach((cat) => {
-      if (cat.parentId && map.has(cat.parentId)) {
-        map.get(cat.parentId).children.push(cat);
-      } else {
-        roots.push(cat);
-      }
+
+    const splitSegments = (name) =>
+      String(name || '')
+        .split('>>')
+        .map((s) => s.trim())
+        .filter(Boolean);
+
+    const cache = new Map();
+    const resolvePathSegments = (cat, stack = new Set()) => {
+      if (!cat || !cat._id) return [];
+      if (cache.has(cat._id)) return cache.get(cat._id);
+      if (stack.has(cat._id)) return splitSegments(cat.name);
+      stack.add(cat._id);
+      const own = splitSegments(cat.name);
+      const parent = cat.parentId ? sourceMap.get(cat.parentId) : null;
+      const parentPath = parent ? resolvePathSegments(parent, stack) : [];
+      stack.delete(cat._id);
+      const merged = [...parentPath];
+      own.forEach((segment) => {
+        if (merged[merged.length - 1] !== segment) {
+          merged.push(segment);
+        }
+      });
+      cache.set(cat._id, merged);
+      return merged;
+    };
+
+    const root = [];
+    const pathMap = new Map();
+    categories.forEach((cat) => {
+      const segments = resolvePathSegments(cat);
+      if (!segments.length) return;
+
+      let currentChildren = root;
+      let currentPath = '';
+      segments.forEach((segment, index) => {
+        currentPath = currentPath ? `${currentPath}>>${segment}` : segment;
+        const key = currentPath.toLowerCase();
+        let node = pathMap.get(key);
+        if (!node) {
+          node = {
+            _id: index === segments.length - 1 ? cat._id : `virtual:${key}`,
+            name: segment,
+            children: [],
+          };
+          pathMap.set(key, node);
+          currentChildren.push(node);
+        } else if (index === segments.length - 1 && String(node._id || '').startsWith('virtual:')) {
+          node._id = cat._id;
+        }
+        currentChildren = node.children;
+      });
     });
-    return roots;
+
+    return root;
   }, [categories]);
 
   const filteredCategoryTree = useMemo(() => {
@@ -906,9 +956,12 @@ export default function ProductsPage() {
     const result = [];
     const walk = (nodes, depth) => {
       nodes.forEach((node) => {
+        const indent = '\u00A0\u00A0'.repeat(depth);
         result.push({
           id: node._id,
-          label: `${'—'.repeat(depth)} ${node.name}`.trim(),
+          plainLabel: node.name,
+          label: depth > 0 ? `${indent}${node.name}` : node.name,
+          depth,
         });
         if (node.children?.length) {
           walk(node.children, depth + 1);
@@ -918,6 +971,19 @@ export default function ProductsPage() {
     walk(categoryTree, 0);
     return result;
   }, [categoryTree]);
+
+  const categoryLabelMap = useMemo(() => {
+    const map = new Map();
+    categoryOptions.forEach((o) => {
+      map.set(o.id, o.plainLabel || o.label);
+    });
+    return map;
+  }, [categoryOptions]);
+
+  const selectedProductCategoryOption = useMemo(
+    () => categoryOptions.find((option) => option.id === productForm.category) || null,
+    [categoryOptions, productForm.category]
+  );
 
   const getProductCellValue = useCallback(
     (item, columnId) => {
@@ -931,7 +997,7 @@ export default function ProductsPage() {
         case 'name':
           return item.name;
         case 'category':
-          return categoryOptions.find((o) => o.id === item.category)?.label || item.category || '';
+          return categoryLabelMap.get(item.category) || item.category || '';
         case 'productType':
           return item.raw?.type || item.attributeName || '';
         case 'price':
@@ -956,7 +1022,7 @@ export default function ProductsPage() {
           return '';
       }
     },
-    [categoryOptions, brands]
+    [categoryLabelMap, brands]
   );
 
   const toggleCategoryDraft = (id) => {
@@ -1728,7 +1794,7 @@ export default function ProductsPage() {
                             )}
                             {visibleColumns.category && (
                               <Typography variant="body2" color="text.secondary">
-                                Nhóm hàng: {categoryOptions.find((o) => o.id === item.category)?.label || item.category || 'Chưa có'}
+                                Nhóm hàng: {categoryLabelMap.get(item.category) || item.category || 'Chưa có'}
                               </Typography>
                             )}
                             {visibleColumns.brand && (
@@ -2288,27 +2354,32 @@ export default function ProductsPage() {
                         fullWidth
                       />
                       <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1 }}>
-                        <FormControl fullWidth error={Boolean(productFormCategoryError)}>
-                          <InputLabel>Nhóm hàng</InputLabel>
-                          <Select
-                            value={productForm.category}
-                            label="Nhóm hàng"
-                            onChange={(event) => {
-                              setProductForm((prev) => ({ ...prev, category: event.target.value }));
-                              setProductFormCategoryError('');
-                            }}
-                          >
-                            <MenuItem value="">Chọn nhóm hàng</MenuItem>
-                            {categoryOptions.map((option) => (
-                              <MenuItem key={option.id} value={option.id}>
-                                {option.label}
-                              </MenuItem>
-                            ))}
-                          </Select>
-                          {productFormCategoryError && (
-                            <FormHelperText sx={{ color: 'error.main' }}>{productFormCategoryError}</FormHelperText>
+                        <Autocomplete
+                          fullWidth
+                          options={categoryOptions}
+                          value={selectedProductCategoryOption}
+                          onChange={(_event, option) => {
+                            setProductForm((prev) => ({ ...prev, category: option?.id || '' }));
+                            setProductFormCategoryError('');
+                          }}
+                          getOptionLabel={(option) => option?.plainLabel || ''}
+                          isOptionEqualToValue={(option, value) => option.id === value.id}
+                          noOptionsText="Không tìm thấy nhóm hàng"
+                          renderOption={(props, option) => (
+                            <Box component="li" {...props} sx={{ pl: 1 + option.depth * 2 }}>
+                              {option.plainLabel}
+                            </Box>
                           )}
-                        </FormControl>
+                          renderInput={(params) => (
+                            <TextField
+                              {...params}
+                              label="Nhóm hàng"
+                              placeholder="Chọn nhóm hàng (Bắt buộc)"
+                              error={Boolean(productFormCategoryError)}
+                              helperText={productFormCategoryError || ''}
+                            />
+                          )}
+                        />
                         <Button
                           size="small"
                           sx={{ textTransform: 'none', mt: 1, minWidth: 'fit-content' }}
