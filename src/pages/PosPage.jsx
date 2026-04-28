@@ -1806,16 +1806,27 @@ export default function PosPage() {
    */
   const handleAddToCart = (product) => {
     const cartItemsKey = isReturnMode ? 'exchangeItems' : 'items';
-    const existingItem = cartItems.find(item => item.product.localId === product.localId);
-    
-    if (existingItem) {
-      handleUpdateQty(product.localId, existingItem.qty + 1);
-    } else {
-      updateCurrentInvoice({
-        [cartItemsKey]: [...cartItems, { product, qty: 1 }]
-      });
-      showSnackbar(`Đã thêm "${product.name}" vào hóa đơn`, 'success');
+    const existingIndex = cartItems.findIndex((item) => item.product.localId === product.localId);
+
+    // Thu ngan quet lien tuc: mat hang vua quet luon duoc don len dau danh sach
+    // de de kiem tra "quet da vao hoa don hay chua".
+    if (existingIndex >= 0) {
+      const existingItem = cartItems[existingIndex];
+      const reordered = [
+        { ...existingItem, qty: (Number(existingItem.qty) || 0) + 1 },
+        ...cartItems.slice(0, existingIndex),
+        ...cartItems.slice(existingIndex + 1),
+      ];
+      updateCurrentInvoice({ [cartItemsKey]: reordered });
+      return;
     }
+
+    const nextItems = [{ product, qty: 1 }, ...cartItems];
+    updateCurrentInvoice({
+      [cartItemsKey]: nextItems,
+    });
+    showSnackbar(`Đã thêm "${product.name}" vào hóa đơn`, 'success');
+
     // Không xóa search term để có thể thêm nhiều sản phẩm cùng lúc
   };
 

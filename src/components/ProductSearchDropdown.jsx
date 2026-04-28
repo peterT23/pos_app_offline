@@ -45,7 +45,8 @@ export default function ProductSearchDropdown({
   anchorEl = null,
   onClose,
   onAddToCart,
-  onProductAdded
+  onProductAdded,
+  onAutoAdded
 }) {
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -56,6 +57,7 @@ export default function ProductSearchDropdown({
   const itemRefs = useRef([]);
   const onAddToCartRef = useRef(onAddToCart);
   const onCloseRef = useRef(onClose);
+  const autoAddedTermRef = useRef('');
   
   // State cho dialog thêm sản phẩm
   const [addProductDialogOpen, setAddProductDialogOpen] = useState(false);
@@ -107,18 +109,22 @@ export default function ProductSearchDropdown({
       const rows = Array.isArray(response?.products) ? response.products : [];
       setProducts(rows);
       
-      // Nếu là barcode và chỉ có 1 kết quả chính xác, tự động thêm vào giỏ
-      if (isBarcode(term) && rows.length === 1) {
-        const exactMatch = rows[0].barcode?.toLowerCase() === term.trim().toLowerCase();
-        if (exactMatch && onAddToCartRef.current) {
-          // Delay một chút để người dùng thấy kết quả
-          setTimeout(() => {
-            onAddToCartRef.current?.(rows[0]);
-            if (onCloseRef.current) {
-              onCloseRef.current();
-            }
-          }, 200);
+      // Quét nhanh: nếu khớp chính xác barcode hoặc mã hàng duy nhất thì tự thêm vào giỏ.
+      const normalizedTerm = String(term || '').trim().toLowerCase();
+      const exactMatches = rows.filter((item) => {
+        const barcode = String(item?.barcode || '').trim().toLowerCase();
+        const productCode = String(item?.productCode || '').trim().toLowerCase();
+        return barcode === normalizedTerm || productCode === normalizedTerm;
+      });
+      const canAutoAdd = exactMatches.length === 1 && onAddToCartRef.current;
+      if (canAutoAdd && autoAddedTermRef.current !== normalizedTerm) {
+        autoAddedTermRef.current = normalizedTerm;
+        const target = exactMatches[0];
+        onAddToCartRef.current?.(target);
+        if (typeof onAutoAdded === 'function') {
+          onAutoAdded(target, normalizedTerm);
         }
+        if (onCloseRef.current) onCloseRef.current();
       }
     } catch (error) {
       console.error('Lỗi load sản phẩm:', error);
@@ -128,7 +134,7 @@ export default function ProductSearchDropdown({
         setLoading(false);
       }
     }
-  }, [MAX_SEARCH_RESULTS]);
+  }, [MAX_SEARCH_RESULTS, onAutoAdded]);
 
   // Load categories khi component mount
   useEffect(() => {
@@ -169,6 +175,15 @@ export default function ProductSearchDropdown({
       }
     };
   }, [searchTerm, open, loadProducts]);
+
+  useEffect(() => {
+    const normalized = String(searchTerm || '').trim().toLowerCase();
+    if (!normalized) {
+      autoAddedTermRef.current = '';
+    } else if (autoAddedTermRef.current && autoAddedTermRef.current !== normalized) {
+      autoAddedTermRef.current = '';
+    }
+  }, [searchTerm]);
 
   useEffect(() => {
     if (products.length === 0) {

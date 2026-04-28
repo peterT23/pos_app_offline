@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { 
   AppBar, 
   Toolbar, 
@@ -51,7 +51,37 @@ export default function Header({
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [localSearchTerm, setLocalSearchTerm] = useState(searchTerm || '');
   const searchInputRef = useRef(null);
+  const searchInputElementRef = useRef(null);
   const searchDebounceRef = useRef(null);
+
+  const focusAndSelectSearch = useCallback(() => {
+    const inputEl = searchInputElementRef.current;
+    if (!inputEl) return;
+    const apply = () => {
+      try {
+        inputEl.focus();
+        inputEl.select();
+      } catch {
+        // ignore focus errors
+      }
+    };
+    requestAnimationFrame(apply);
+    setTimeout(apply, 20);
+    setTimeout(apply, 60);
+  }, []);
+
+  const resetSearchAfterScannedAdd = useCallback(() => {
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    setLocalSearchTerm('');
+    if (onSearch) onSearch('');
+    setDropdownOpen(false);
+    focusAndSelectSearch();
+  }, [focusAndSelectSearch, onSearch]);
+
+  const handleAddToCartFromSearch = useCallback((product) => {
+    if (onAddToCart) onAddToCart(product);
+    resetSearchAfterScannedAdd();
+  }, [onAddToCart, resetSearchAfterScannedAdd]);
 
   useEffect(() => {
     setLocalSearchTerm(searchTerm || '');
@@ -97,6 +127,7 @@ export default function Header({
         >
           <TextField
             ref={searchInputRef}
+            inputRef={searchInputElementRef}
             fullWidth
             size="small"
             placeholder={searchPlaceholder || "Tìm hàng hóa (F3) hoặc quét barcode..."}
@@ -141,7 +172,10 @@ export default function Header({
               open={dropdownOpen}
               anchorEl={searchInputRef.current}
               onClose={handleCloseDropdown}
-              onAddToCart={onAddToCart}
+              onAddToCart={handleAddToCartFromSearch}
+              onAutoAdded={() => {
+                resetSearchAfterScannedAdd();
+              }}
             />
           )}
         </Box>
