@@ -91,24 +91,33 @@ export function usePrintService({
           <title>Hóa đơn bán hàng</title>
           <style>
             @page { size: 80mm auto; margin: 2mm; }
-            body { font-family: Arial, sans-serif; color: #111; margin: 0; padding: 0; font-size: 11px; }
+            body {
+              font-family: Arial, sans-serif;
+              color: #000;
+              margin: 0;
+              padding: 0;
+              font-size: 11px;
+              font-weight: 600;
+              -webkit-print-color-adjust: exact;
+              print-color-adjust: exact;
+            }
             .receipt { width: 76mm; margin: 0 auto; }
             .header { text-align: center; margin-bottom: 6px; }
-            .store-name { font-size: 13px; font-weight: 700; }
-            .store-line { font-size: 10px; margin-top: 1px; }
+            .store-name { font-size: 13px; font-weight: 700; color: #000; }
+            .store-line { font-size: 10px; margin-top: 1px; color: #000; font-weight: 600; }
             .section { margin-top: 6px; font-size: 10.5px; }
-            .section-title { font-weight: 600; margin-bottom: 4px; }
+            .section-title { font-weight: 700; margin-bottom: 4px; color: #000; }
             table { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 10.5px; }
-            th, td { padding: 3px 2px; border-bottom: 1px dashed #ccc; vertical-align: top; }
-            th { text-align: left; font-weight: 600; }
+            th, td { padding: 3px 2px; border-bottom: 1px dashed #000; vertical-align: top; color: #000; }
+            th { text-align: left; font-weight: 700; }
             .item-qty, .item-price, .item-total { text-align: right; }
-            .price-final { font-weight: 600; }
-            .price-original { color: #666; text-decoration: line-through; font-size: 9px; }
+            .price-final { font-weight: 700; color: #000; }
+            .price-original { color: #000; text-decoration: line-through; font-size: 9px; font-weight: 600; }
             .summary { margin-top: 8px; font-size: 10.5px; }
             .summary-row { display: flex; justify-content: space-between; margin-top: 4px; }
-            .summary-total { font-weight: 700; font-size: 11px; }
-            .divider { border-top: 1px dashed #ccc; margin: 8px 0; }
-            .cut-line { margin-top: 8px; padding-top: 4px; border-top: 1px dashed #333; text-align: center; font-size: 9px; }
+            .summary-total { font-weight: 700; font-size: 11px; color: #000; }
+            .divider { border-top: 1px dashed #000; margin: 8px 0; }
+            .cut-line { margin-top: 8px; padding-top: 4px; border-top: 1px dashed #000; text-align: center; font-size: 9px; font-weight: 700; color: #000; }
           </style>
         </head>
         <body>
