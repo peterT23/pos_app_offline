@@ -850,10 +850,10 @@ export default function SuppliersPage() {
                           <TableCell colSpan={2} />
                           <TableCell colSpan={5} />
                           <TableCell align="right" sx={{ fontWeight: 600 }}>
-                            {sumDebt.toLocaleString('vi-VN')}
+                            {sumDebt.toLocaleString('en-US')}
                           </TableCell>
                           <TableCell align="right" sx={{ fontWeight: 600 }}>
-                            {sumPurchase.toLocaleString('vi-VN')}
+                            {sumPurchase.toLocaleString('en-US')}
                           </TableCell>
                         </TableRow>
                       </TableHead>
@@ -903,10 +903,10 @@ export default function SuppliersPage() {
                               <TableCell>{row.group || '—'}</TableCell>
                               <TableCell>{row.email || '—'}</TableCell>
                               <TableCell align="right">
-                                {(Number(row.currentDebt) || 0).toLocaleString('vi-VN')}
+                                {(Number(row.currentDebt) || 0).toLocaleString('en-US')}
                               </TableCell>
                               <TableCell align="right">
-                                {(Number(row.totalPurchase) || 0).toLocaleString('vi-VN')}
+                                {(Number(row.totalPurchase) || 0).toLocaleString('en-US')}
                               </TableCell>
                             </TableRow>
                             {expandedSupplierId === row._id && (
@@ -1037,10 +1037,10 @@ export default function SuppliersPage() {
                                           </Typography>
                                           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
                                             <Typography variant="body2">
-                                              Nợ cần trả: <strong>{(Number(row.currentDebt) || 0).toLocaleString('vi-VN')} đ</strong>
+                                              Nợ cần trả: <strong>{(Number(row.currentDebt) || 0).toLocaleString('en-US')} đ</strong>
                                             </Typography>
                                             <Typography variant="body2">
-                                              Tổng mua: <strong>{(Number(row.totalPurchase) || 0).toLocaleString('vi-VN')} đ</strong>
+                                              Tổng mua: <strong>{(Number(row.totalPurchase) || 0).toLocaleString('en-US')} đ</strong>
                                             </Typography>
                                           </Box>
                                         </Paper>

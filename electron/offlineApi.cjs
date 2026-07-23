@@ -2426,13 +2426,17 @@ function handleOfflineRequest(db, { method, path, body }) {
   const replaceOrder = p.match(/^\/api\/orders\/(.+)\/replace$/);
   if (m === 'POST' && replaceOrder) {
     const id = decodeURIComponent(replaceOrder[1]);
-    const localId = String(b.localId || id);
-    const existing = getOrders(db).find((o) => String(o.localId) === localId || String(o.orderCode) === id);
+    const orders = getOrders(db);
+    const existing =
+      orders.find((o) => String(o.localId) === String(b.localId || '')) ||
+      orders.find((o) => String(o.localId) === id || String(o.orderCode) === id || String(o._id) === id);
+    // Luôn dùng localId thật (UUID). Không được lấy mã HĐ (HD…) làm primary key.
+    const localId = String(existing?.localId || b.localId || id);
     const order = {
       ...(existing || {}),
       localId,
       _id: localId,
-      orderCode: b.orderCode || existing?.orderCode || '',
+      orderCode: b.orderCode || existing?.orderCode || (String(id).match(/^HD/i) ? id : existing?.orderCode) || '',
       totalAmount: Number(b.totalAmount) || 0,
       subtotalAmount: Number(b.subtotalAmount) || 0,
       discount: Number(b.discount) || 0,
@@ -2443,13 +2447,38 @@ function handleOfflineRequest(db, { method, path, body }) {
       note: b.note || '',
       status: existing?.status || 'completed',
       updatedAt: Date.now(),
+      originalItems: existing?.originalItems || b.originalItems || undefined,
+      originalTotalAmount: existing?.originalTotalAmount ?? b.originalTotalAmount,
+      originalSubtotalAmount: existing?.originalSubtotalAmount ?? b.originalSubtotalAmount,
     };
     putPosDoc(db, 'pos_orders', localId, order);
+
+    // Xóa bản ghi trùng nếu trước đó từng lưu nhầm với local_id = mã HĐ
+    if (existing?.orderCode && String(existing.orderCode) !== localId) {
+      const dup = orders.find(
+        (o) =>
+          String(o.localId) === String(existing.orderCode) &&
+          String(o.localId) !== localId
+      );
+      if (dup) {
+        db.prepare('DELETE FROM pos_orders WHERE local_id = ?').run(String(dup.localId));
+        db.prepare('DELETE FROM pos_order_items WHERE order_local_id = ?').run(String(dup.localId));
+      }
+    }
+    // Cũng dọn nếu URL id là mã HĐ và có row local_id = mã HĐ
+    if (String(id) !== localId) {
+      const stray = orders.find((o) => String(o.localId) === String(id) && String(o.localId) !== localId);
+      if (stray) {
+        db.prepare('DELETE FROM pos_orders WHERE local_id = ?').run(String(id));
+        db.prepare('DELETE FROM pos_order_items WHERE order_local_id = ?').run(String(id));
+      }
+    }
+
     db.prepare('DELETE FROM pos_order_items WHERE order_local_id = ?').run(localId);
     const items = Array.isArray(b.items) ? b.items : [];
     const ins = db.prepare('INSERT INTO pos_order_items (order_local_id, doc) VALUES (?, ?)');
     for (const item of items) ins.run(localId, JSON.stringify({ ...item, orderLocalId: localId }));
-    return { ok: true };
+    return { ok: true, localId, orderCode: order.orderCode };
   }
 
   const orderMatch = p.match(/^\/api\/orders\/([^/]+)$/);
@@ -2457,7 +2486,17 @@ function handleOfflineRequest(db, { method, path, body }) {
     const id = decodeURIComponent(orderMatch[1]);
     const orders = getOrders(db);
     const returns = getReturns(db);
-    const order = orders.find((o) => String(o.localId) === id || String(o.orderCode) === id || String(o._id) === id);
+    // Ưu tiên khớp localId UUID; tránh lấy bản ghi lệch local_id = mã HĐ (bug replace cũ)
+    const candidates = orders.filter(
+      (o) => String(o.localId) === id || String(o.orderCode) === id || String(o._id) === id
+    );
+    candidates.sort((a, b) => {
+      const aCodeAsId = String(a.localId) === String(a.orderCode) ? 1 : 0;
+      const bCodeAsId = String(b.localId) === String(b.orderCode) ? 1 : 0;
+      if (aCodeAsId !== bCodeAsId) return aCodeAsId - bCodeAsId;
+      return (Number(b.updatedAt || b.createdAt) || 0) - (Number(a.updatedAt || a.createdAt) || 0);
+    });
+    const order = candidates[0];
     if (order) {
       if (m === 'GET') {
         const normalizeProductKey = (value) => String(value || '').trim().replace(/_/g, '-').toLowerCase();
@@ -2479,17 +2518,68 @@ function handleOfflineRequest(db, { method, path, body }) {
             (it.productCode ? productMap.get(normalizeProductKey(it.productCode)) : null) ||
             (productNameKey ? productByName.get(productNameKey) : null) ||
             null;
+          const basePrice = Number(it.basePrice) || 0;
+          const discount = Number(it.discount) || 0;
+          const discountType = it.discountType || 'vnd';
+          let soldUnit = Number(it.price) || 0;
+          if (basePrice > 0 && (discount > 0 || discountType === 'percent')) {
+            soldUnit =
+              discountType === 'percent'
+                ? Math.max(0, Math.round(basePrice * (1 - discount / 100)))
+                : Math.max(0, basePrice - discount);
+          }
+          const qty = Number(it.qty) || 0;
+          const subtotal = Number(it.subtotal) || soldUnit * qty;
           return {
             ...it,
             orderLocalId: order.localId,
             productCode: it.productCode || product?.productCode || '',
             productName: it.productName || product?.name || '',
+            basePrice: basePrice > 0 ? basePrice : soldUnit,
+            discount,
+            discountType,
+            price: soldUnit,
+            qty,
+            subtotal,
           };
         });
-        const returnIds = returns
-          .filter((r) => String(r.orderLocalId || '') === String(order.localId) || String(r.orderCode || '') === String(order.orderCode || ''))
-          .map((r) => r.localId);
-        return { order: { ...order, _id: order.localId, returnIds }, items };
+        const invoiceGoodsSubtotal = items.reduce((s, it) => s + (Number(it.subtotal) || 0), 0);
+        const returnsForOrder = returns.filter(
+          (r) =>
+            String(r.orderLocalId || '') === String(order.localId) ||
+            String(r.orderCode || '') === String(order.orderCode || '')
+        );
+        const returnIds = returnsForOrder.map((r) => r.localId);
+        let customer = null;
+        if (order.customerLocalId) {
+          customer = getCustomers(db).find((c) => String(c.localId) === String(order.customerLocalId)) || null;
+        }
+        if (!customer && order.customerPhone) {
+          const phone = String(order.customerPhone || '').trim();
+          customer = getCustomers(db).find((c) => String(c.phone || '').trim() === phone) || null;
+        }
+        const customerName =
+          order.customerName ||
+          order.customerLabel ||
+          customer?.name ||
+          customer?.nickname ||
+          '';
+        return {
+          order: {
+            ...order,
+            _id: order.localId,
+            returnIds,
+            customerName: customerName || 'Khách lẻ',
+            customerPhone: order.customerPhone || customer?.phone || '',
+            customerEmail: customer?.email || '',
+            customerAddress: customer?.address || '',
+            customerCode: customer?.customerCode || order.customerCode || '',
+            customerDateOfBirth: customer?.dateOfBirth || customer?.birthday || customer?.dob || '',
+          },
+          items,
+          invoiceLineItems: items,
+          invoiceGoodsSubtotal,
+        };
       }
       if (m === 'PATCH') {
         const next = { ...order, ...b, localId: order.localId, _id: order.localId, updatedAt: Date.now() };

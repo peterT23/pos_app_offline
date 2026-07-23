@@ -283,13 +283,13 @@ export default function ReportsPage() {
                 <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap', mb: 2 }}>
                   <Chip label={`Đơn hàng: ${reportData.orderCount}`} variant="outlined" />
                   <Chip label={`Trả hàng: ${reportData.returnCount}`} variant="outlined" />
-                  <Chip label={`Giá vốn: ${reportData.totalCost.toLocaleString('vi-VN')}`} color="default" />
+                  <Chip label={`Giá vốn: ${reportData.totalCost.toLocaleString('en-US')}`} color="default" />
                   <Chip
-                    label={`Lợi nhuận: ${reportData.totalProfit.toLocaleString('vi-VN')}`}
+                    label={`Lợi nhuận: ${reportData.totalProfit.toLocaleString('en-US')}`}
                     color={reportData.totalProfit >= 0 ? 'success' : 'error'}
                   />
-                  <Chip label={`Doanh thu: ${reportData.totalSales.toLocaleString('vi-VN')}`} color="primary" />
-                  <Chip label={`Trả hàng: ${reportData.totalReturns.toLocaleString('vi-VN')}`} color="warning" />
+                  <Chip label={`Doanh thu: ${reportData.totalSales.toLocaleString('en-US')}`} color="primary" />
+                  <Chip label={`Trả hàng: ${reportData.totalReturns.toLocaleString('en-US')}`} color="warning" />
                 </Box>
                 {(() => {
                   const buckets = reportData.buckets || [];
@@ -305,7 +305,7 @@ export default function ReportsPage() {
                           <Box key={bucket.label} sx={{ minWidth: 28 }}>
                             <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'flex-end', height: 220 }}>
                               <Tooltip
-                                title={`${bucket.label} · Giá vốn: ${bucket.totalCost.toLocaleString('vi-VN')} · Lợi nhuận: ${bucket.totalProfit.toLocaleString('vi-VN')} · Doanh thu: ${bucket.totalSales.toLocaleString('vi-VN')} · Trả hàng: ${bucket.totalReturns.toLocaleString('vi-VN')}`}
+                                title={`${bucket.label} · Giá vốn: ${bucket.totalCost.toLocaleString('en-US')} · Lợi nhuận: ${bucket.totalProfit.toLocaleString('en-US')} · Doanh thu: ${bucket.totalSales.toLocaleString('en-US')} · Trả hàng: ${bucket.totalReturns.toLocaleString('en-US')}`}
                                 arrow
                               >
                                 <Box

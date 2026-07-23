@@ -52,16 +52,14 @@ import Layout from '../components/Layout';
 import { apiRequest, apiRequestFormData, downloadBlob } from '../utils/apiClient';
 import { isOfflineElectron } from '../../constants/offlineSession';
 import { displayCustomerCode, displayProductCode, displayReturnCode } from '../../utils/codeDisplay';
+import { formatMoney } from '../../utils/moneyFormat';
 
-function formatMoney(n) {
-  return (Number(n) || 0).toLocaleString('vi-VN');
-}
 
 /** Điểm thưởng — số nguyên, không định dạng tiền */
 function formatPoints(n) {
   const x = Number(n);
   if (Number.isNaN(x)) return '0';
-  return Math.round(x).toLocaleString('vi-VN');
+  return Math.round(x).toLocaleString('en-US');
 }
 
 function formatDT(ts) {

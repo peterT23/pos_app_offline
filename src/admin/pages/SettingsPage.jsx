@@ -167,7 +167,7 @@ export default function AdminSettingsPage() {
   const earnSummary = useMemo(() => {
     const amount = Number(loyaltySettings.earningAmount) || 100000;
     const points = Number(loyaltySettings.earningPoints) || 1;
-    return `Tích điểm theo hóa đơn: Mua ${amount.toLocaleString('vi-VN')} tích ${points} điểm`;
+    return `Tích điểm theo hóa đơn: Mua ${amount.toLocaleString('en-US')} tích ${points} điểm`;
   }, [loyaltySettings.earningAmount, loyaltySettings.earningPoints]);
 
   const SidebarItem = ({ item, selected = false, onClick }) => (

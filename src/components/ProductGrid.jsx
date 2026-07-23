@@ -166,7 +166,7 @@ export default function ProductGrid({ searchTerm = '', onAddToCart, refreshTrigg
                     fontSize: '1.3rem',
                   }}
                 >
-                  {product.price?.toLocaleString('vi-VN')} đ
+                  {product.price?.toLocaleString('en-US')} đ
                 </Typography>
 
                 {/* Tồn kho */}

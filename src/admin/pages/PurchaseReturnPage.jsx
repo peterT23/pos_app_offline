@@ -19,10 +19,8 @@ import SaveOutlinedIcon from '@mui/icons-material/SaveOutlined';
 import CheckCircleOutlinedIcon from '@mui/icons-material/CheckCircleOutlined';
 import Layout from '../components/Layout';
 import { apiRequest } from '../utils/apiClient';
+import { formatMoney } from '../../utils/moneyFormat';
 
-function formatMoney(n) {
-  return (Number(n) || 0).toLocaleString('vi-VN');
-}
 
 export default function PurchaseReturnPage() {
   const navigate = useNavigate();

@@ -43,6 +43,11 @@ import {
 // Import component CustomerSearchDropdown để hiển thị dropdown tìm kiếm khách hàng
 import CustomerSearchDropdown from './CustomerSearchDropdown';
 import { BANK_OPTIONS, BANK_OPTION_MAP } from '../constants/bankOptions';
+import {
+  formatMoneyInput,
+  normalizeMoneyTyping,
+  parseMoneyInput,
+} from '../utils/moneyFormat';
 
 /**
  * Component PaymentPanel: Panel thanh toán bên phải
@@ -129,11 +134,21 @@ export default function PaymentPanel({
   // State quản lý việc mở/đóng modal giảm giá
   const [discountModalOpen, setDiscountModalOpen] = useState(false);
   
-  // State lưu giá trị giảm giá đang nhập (string để cho phép nhập tự do)
-  const [discountInput, setDiscountInput] = useState(discount.toString());
+  // State lưu giá trị giảm giá đang nhập (string để cho phép nhập tự do, có ngăn cách hàng nghìn)
+  const [discountInput, setDiscountInput] = useState(
+    discountType === 'percent' ? String(discount) : formatMoneyInput(discount)
+  );
   
   // Ref đến TextField giảm giá để auto-focus và select text
   const discountInputRef = useRef(null);
+
+  const parseDiscountInputValue = () => {
+    if (discountType === 'percent') {
+      const n = parseFloat(String(discountInput).replace(',', '.'));
+      return Number.isFinite(n) ? n : 0;
+    }
+    return parseMoneyInput(discountInput);
+  };
 
   // State quản lý tài khoản ngân hàng cho chuyển khoản
   const [bankAccounts, setBankAccounts] = useState([]);
@@ -149,13 +164,12 @@ export default function PaymentPanel({
     accountName: ''
   });
 
-  // useEffect: Sync discountInput với discount prop
-  // Chạy mỗi khi discount prop thay đổi
-  // Mục đích: Đảm bảo discountInput luôn đồng bộ với discount từ parent
+  // Sync discountInput với discount prop (VND có ngăn cách hàng nghìn)
   useEffect(() => {
-    // Convert discount (number) sang string để hiển thị trong input
-    setDiscountInput(discount.toString());
-  }, [discount]); // Dependency: Chỉ chạy khi discount thay đổi
+    setDiscountInput(
+      discountType === 'percent' ? String(discount) : formatMoneyInput(discount)
+    );
+  }, [discount, discountType]);
 
   useEffect(() => {
     if (!pointPaymentEnabled && pointAmountEditing) {
@@ -165,8 +179,8 @@ export default function PaymentPanel({
 
   useEffect(() => {
     if (pointAmountEditing) return;
-    const next = String(pointPaymentEnabled ? Number(pointPaymentAmount || 0) : 0);
-    setPointAmountInput(next);
+    const next = pointPaymentEnabled ? Number(pointPaymentAmount || 0) : 0;
+    setPointAmountInput(formatMoneyInput(next));
   }, [pointPaymentAmount, pointPaymentEnabled, pointAmountEditing]);
 
   // Load tài khoản ngân hàng từ localStorage
@@ -427,7 +441,7 @@ export default function PaymentPanel({
                   }}
                 >
                   <Typography variant="caption" sx={{ fontWeight: 600 }}>
-                    Nợ: {customerDebt !== 0 ? `- ${Math.abs(customerDebt).toLocaleString('vi-VN')}` : '0'}
+                    Nợ: {customerDebt !== 0 ? `- ${Math.abs(customerDebt).toLocaleString('en-US')}` : '0'}
                   </Typography>
                 </Box>
                 {/* Số điểm tích lũy - Hiển thị màu xanh */}
@@ -481,7 +495,7 @@ export default function PaymentPanel({
           <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
             
             <Typography variant="body2" sx={{ fontWeight: 500 }}>
-              {totalAmount.toLocaleString('vi-VN')}
+              {totalAmount.toLocaleString('en-US')}
             </Typography>
           </Box>
         </Box>
@@ -507,7 +521,7 @@ export default function PaymentPanel({
             <Typography variant="body2">Giảm giá:</Typography>
             {/* Text hiển thị số tiền giảm giá với format VN */}
             <Typography variant="body2" sx={{ fontWeight: 500 }}>
-              {orderDiscount.toLocaleString('vi-VN')} đ
+              {orderDiscount.toLocaleString('en-US')} đ
             </Typography>
           </Box>
         </Box>
@@ -533,14 +547,18 @@ export default function PaymentPanel({
                     value={discountInput}
                     onChange={(e) => {
                       const value = e.target.value;
-                      // Chỉ cho phép số và dấu chấm
-                      if (value === '' || /^\d*\.?\d*$/.test(value)) {
-                        setDiscountInput(value);
+                      if (discountType === 'percent') {
+                        if (value === '' || /^\d*\.?\d*$/.test(value)) {
+                          setDiscountInput(value);
+                        }
+                        return;
                       }
+                      const typed = normalizeMoneyTyping(value);
+                      setDiscountInput(typed.display);
                     }}
                     onKeyDown={(e) => {
                       if (e.key === 'Enter') {
-                        const discountValue = parseFloat(discountInput) || 0;
+                        const discountValue = parseDiscountInputValue();
                         if (onDiscountChange) {
                           onDiscountChange(discountValue, discountType);
                         }
@@ -560,7 +578,7 @@ export default function PaymentPanel({
                     size="small"
                     variant={discountType === 'vnd' ? 'contained' : 'outlined'}
                     onClick={() => {
-                      const discountValue = parseFloat(discountInput) || 0;
+                      const discountValue = parseDiscountInputValue();
                       if (onDiscountChange) {
                         onDiscountChange(discountValue, 'vnd');
                       }
@@ -573,7 +591,7 @@ export default function PaymentPanel({
                     size="small"
                     variant={discountType === 'percent' ? 'contained' : 'outlined'}
                     onClick={() => {
-                      const discountValue = parseFloat(discountInput) || 0;
+                      const discountValue = parseDiscountInputValue();
                       if (onDiscountChange) {
                         onDiscountChange(discountValue, 'percent');
                       }
@@ -584,16 +602,16 @@ export default function PaymentPanel({
                   </Button>
                 </Box>
               </Box>
-              {discountInput && parseFloat(discountInput) > 0 && (
+              {discountInput && parseDiscountInputValue() > 0 && (
                 <Box sx={{ p: 1, bgcolor: 'action.hover', borderRadius: 1 }}>
                   <Typography variant="caption" color="text.secondary" >
                     Giảm giá: {(() => {
-                      const discountValue = parseFloat(discountInput) || 0;
+                      const discountValue = parseDiscountInputValue();
                       if (discountType === 'percent') {
                         const discountAmount = subtotalAmount * (discountValue / 100);
-                        return `${discountAmount.toLocaleString('vi-VN')} đ (${discountValue}%)`;
+                        return `${discountAmount.toLocaleString('en-US')} đ (${discountValue}%)`;
                       } else {
-                        return `${discountValue.toLocaleString('vi-VN')} đ`;
+                        return `${discountValue.toLocaleString('en-US')} đ`;
                       }
                     })()}
                   </Typography>
@@ -606,7 +624,7 @@ export default function PaymentPanel({
             <Button 
               variant="contained" 
               onClick={() => {
-                const discountValue = parseFloat(discountInput) || 0;
+                const discountValue = parseDiscountInputValue();
                 if (onDiscountChange) {
                   onDiscountChange(discountValue, discountType);
                 }
@@ -621,7 +639,7 @@ export default function PaymentPanel({
         <Box sx={{ mb: 1 }}>
           <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.5 }}>
             <Typography variant="body2" sx={{ color: '#2e7d32', fontWeight: 500 }}>
-              Điểm {Number(customerPoints || 0).toLocaleString('vi-VN')}
+              Điểm {Number(customerPoints || 0).toLocaleString('en-US')}
             </Typography>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
               <Switch
@@ -632,31 +650,27 @@ export default function PaymentPanel({
               />
               <TextField
                 size="small"
-                type="number"
                 value={pointAmountInput}
                 onChange={(e) => {
-                  const raw = e.target.value;
-                  if (!/^\d*$/.test(raw)) return;
-                  setPointAmountInput(raw);
-                  const value = Math.max(0, Number(raw) || 0);
-                  if (onPointPaymentAmountChange) onPointPaymentAmountChange(value);
+                  const typed = normalizeMoneyTyping(e.target.value);
+                  setPointAmountInput(typed.display);
+                  if (onPointPaymentAmountChange) {
+                    onPointPaymentAmountChange(Math.max(0, typed.number));
+                  }
                 }}
-                onFocus={() => {
+                onFocus={(e) => {
                   setPointAmountEditing(true);
+                  setTimeout(() => e.target.select(), 10);
                 }}
                 onBlur={() => {
                   setPointAmountEditing(false);
-                  const value = Math.max(0, Number(pointAmountInput) || 0);
+                  const value = Math.max(0, parseMoneyInput(pointAmountInput));
+                  setPointAmountInput(formatMoneyInput(value));
                   if (onPointPaymentAmountChange) onPointPaymentAmountChange(value);
                 }}
                 disabled={!pointPaymentEnabled}
-                inputProps={{
-                  min: 0,
-                  max: totalAmount,
-                  step: Math.max(1, Number(loyaltyRedeemAmount) || 1),
-                }}
                 sx={{
-                  width: 112,
+                  width: 128,
                   '& .MuiInputBase-input': {
                     textAlign: 'right',
                     py: 0.8,
@@ -671,7 +685,7 @@ export default function PaymentPanel({
                 Còn lại
               </Typography>
               <Typography variant="body2" sx={{ minWidth: 72, textAlign: 'right' }}>
-                {finalNeedToPay.toLocaleString('vi-VN')}
+                {finalNeedToPay.toLocaleString('en-US')}
               </Typography>
             </Box>
           )}
@@ -682,7 +696,7 @@ export default function PaymentPanel({
             Khách cần trả:
           </Typography>
           <Typography variant="body1" color="primary" sx={{ fontWeight: 700 }}>
-            {finalNeedToPay.toLocaleString('vi-VN')} đ
+            {finalNeedToPay.toLocaleString('en-US')} đ
           </Typography>
         </Box>
 
@@ -696,13 +710,12 @@ export default function PaymentPanel({
           <TextField
             fullWidth
             size="small"
-            value={amountPaid || finalNeedToPay}
+            value={formatMoneyInput(amountPaid || finalNeedToPay)}
             onFocus={(e) => e.target.select()}
             onChange={(e) => {
-              const value = parseInt(e.target.value) || 0;
-              onAmountPaidChange && onAmountPaidChange(value);
+              const { number } = normalizeMoneyTyping(e.target.value);
+              onAmountPaidChange && onAmountPaidChange(number);
             }}
-            type="number"
           />
         </Box>
 
@@ -718,7 +731,7 @@ export default function PaymentPanel({
                   {/* Chip component: Tag/badge có thể click */}
                   <Chip
                     // label: Text hiển thị trên chip (số tiền với format VN)
-                    label={amount.toLocaleString('vi-VN')}
+                    label={amount.toLocaleString('en-US')}
                     // onClick: Khi click, set số tiền trả = amount
                     onClick={() => onAmountPaidChange && onAmountPaidChange(amount)}
                     // color: Màu primary nếu đang được chọn, default nếu không

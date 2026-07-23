@@ -52,15 +52,12 @@ import Layout from '../components/Layout';
 import { useAuth } from '../auth/AuthContext';
 import { apiRequest } from '../utils/apiClient';
 import { getStoredStoreId } from '../utils/authStorage';
+import { formatMoney, parseMoneyInput } from '../../utils/moneyFormat';
 
-function formatMoney(n) {
-  return (Number(n) || 0).toLocaleString('vi-VN');
-}
 
 function parseNumber(v) {
   if (v === '' || v == null) return 0;
-  const n = Number(String(v).replace(/,/g, '').trim());
-  return Number.isNaN(n) ? 0 : n;
+  return parseMoneyInput(v);
 }
 
 const DRAFT_STORAGE_KEY = 'purchaseOrderDraft';
@@ -1152,7 +1149,7 @@ export default function PurchaseOrderNewPage() {
                       {p.productCode || '—'} — {p.name || '—'}
                     </Typography>
                     <Typography variant="caption" color="text.secondary">
-                      ĐVT: {p.unit || '—'} · Đơn giá: {(Number(p.lastPurchaseUnitPrice) || Number(p.costPrice) || Number(p.price) || 0).toLocaleString('vi-VN')}
+                      ĐVT: {p.unit || '—'} · Đơn giá: {(Number(p.lastPurchaseUnitPrice) || Number(p.costPrice) || Number(p.price) || 0).toLocaleString('en-US')}
                     </Typography>
                   </Box>
                 ))
@@ -1504,7 +1501,7 @@ export default function PurchaseOrderNewPage() {
                       <TableCell align="right">{row.quantity || 0}</TableCell>
                       <TableCell align="right">{formatMoney(row.unitPrice)}</TableCell>
                       <TableCell align="right">{formatMoney(row.discount)}</TableCell>
-                      <TableCell align="right">{Number(row.discountPercent || 0).toLocaleString('vi-VN')}</TableCell>
+                      <TableCell align="right">{Number(row.discountPercent || 0).toLocaleString('en-US')}</TableCell>
                       <TableCell align="right">{formatMoney(row.amount)}</TableCell>
                       <TableCell>{row.note || '—'}</TableCell>
                       <TableCell>{row.importAction === 'created' ? 'Tạo mới' : 'Đã có'}</TableCell>

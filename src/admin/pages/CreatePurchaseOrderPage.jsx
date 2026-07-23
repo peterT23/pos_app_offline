@@ -26,10 +26,8 @@ import { useNavigate } from 'react-router-dom';
 import Layout from '../components/Layout';
 import { apiRequest } from '../utils/apiClient';
 import { getStoredStoreId } from '../utils/authStorage';
+import { formatMoney } from '../../utils/moneyFormat';
 
-function formatMoney(n) {
-  return (Number(n) || 0).toLocaleString('vi-VN');
-}
 
 export default function CreatePurchaseOrderPage() {
   const navigate = useNavigate();

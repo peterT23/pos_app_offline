@@ -29,6 +29,7 @@ import FileDownloadOutlinedIcon from '@mui/icons-material/FileDownloadOutlined';
 import Layout from '../components/Layout';
 import { apiRequest } from '../utils/apiClient';
 import { displayReturnCode } from '../../utils/codeDisplay';
+import { formatMoney } from '../../utils/moneyFormat';
 
 function toYMD(d) {
   if (!d) return '';
@@ -39,9 +40,6 @@ function toYMD(d) {
   return `${y}-${m}-${day}`;
 }
 
-function formatMoney(n) {
-  return (Number(n) || 0).toLocaleString('vi-VN');
-}
 
 function formatDateTime(ts) {
   if (!ts) return '—';

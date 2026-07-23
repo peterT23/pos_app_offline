@@ -38,6 +38,11 @@ import {
   Chip,
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
+import {
+  formatMoneyInput,
+  normalizeMoneyTyping,
+  parseMoneyInput,
+} from '../../utils/moneyFormat';
 import FileUploadOutlinedIcon from '@mui/icons-material/FileUploadOutlined';
 import FileDownloadOutlinedIcon from '@mui/icons-material/FileDownloadOutlined';
 import ViewAgendaOutlinedIcon from '@mui/icons-material/ViewAgendaOutlined';
@@ -485,8 +490,8 @@ export default function ProductsPage() {
     name: item.name || '',
     category: item.category || '',
     brand: item.brand || '',
-    cost: Number(item.cost) || 0,
-    price: Number(item.price) || 0,
+    cost: formatMoneyInput(Number(item.cost) || 0),
+    price: formatMoneyInput(Number(item.price) || 0),
     stock: Number(item.stock) || 0,
     minStock: Number(item.minStock) || 0,
     maxStock: Number(item.maxStock) || 999999999,
@@ -516,8 +521,8 @@ export default function ProductsPage() {
       name: '',
       category: '',
       brand: '',
-      cost: 0,
-      price: 0,
+      cost: formatMoneyInput(0),
+      price: formatMoneyInput(0),
       stock: 0,
       minStock: 0,
       maxStock: 999999999,
@@ -613,8 +618,8 @@ export default function ProductsPage() {
           id: variantCodes[index] ?? `${baseCode}-${index}`,
           key: variantCodes[index] ?? `${baseCode}-${index}`,
           name: `${productForm.name} - ${row.value}`,
-          price: Number(row.price) || 0,
-          cost: Number(row.cost) || 0,
+          price: parseMoneyInput(row.price),
+          cost: parseMoneyInput(row.cost),
           stock: Number(row.stock) || 0,
           createdAt: now,
           barcode: row.barcode || productForm.barcode,
@@ -657,8 +662,8 @@ export default function ProductsPage() {
             productCode: baseCode,
             name: productForm.name,
             barcode: productForm.barcode,
-            price: Number(productForm.price) || 0,
-            costPrice: Number(productForm.cost) || 0,
+            price: parseMoneyInput(productForm.price),
+            costPrice: parseMoneyInput(productForm.cost),
             stock: Number(productForm.stock) || 0,
             unit: productForm.unit,
             categoryId: productForm.category,
@@ -1001,9 +1006,9 @@ export default function ProductsPage() {
         case 'productType':
           return item.raw?.type || item.attributeName || '';
         case 'price':
-          return item.price != null ? item.price.toLocaleString('vi-VN') : '';
+          return item.price != null ? item.price.toLocaleString('en-US') : '';
         case 'cost':
-          return item.cost != null ? item.cost.toLocaleString('vi-VN') : '';
+          return item.cost != null ? item.cost.toLocaleString('en-US') : '';
         case 'brand':
           return brands.find((b) => b._id === item.brand)?.name || '';
         case 'stock':
@@ -1500,7 +1505,7 @@ export default function ProductsPage() {
                               {item.name}
                             </Typography>
                             <Typography variant="caption" color="text.secondary">
-                              {item.id} · Giá bán: {item.price.toLocaleString('vi-VN')}
+                              {item.id} · Giá bán: {item.price.toLocaleString('en-US')}
                             </Typography>
                             <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
                               Tồn: {item.stock} · Khách đặt: 0
@@ -1844,20 +1849,20 @@ export default function ProductsPage() {
                               {visibleColumns.cost && (
                                 <Box>
                                   <Typography variant="caption" color="text.secondary">Giá vốn</Typography>
-                                  <Typography variant="body2">{item.cost != null ? item.cost.toLocaleString('vi-VN') : ''}</Typography>
+                                  <Typography variant="body2">{item.cost != null ? item.cost.toLocaleString('en-US') : ''}</Typography>
                                 </Box>
                               )}
                               {visibleColumns.price && (
                                 <Box>
                                   <Typography variant="caption" color="text.secondary">Giá bán</Typography>
-                                  <Typography variant="body2">{item.price != null ? item.price.toLocaleString('vi-VN') : ''}</Typography>
+                                  <Typography variant="body2">{item.price != null ? item.price.toLocaleString('en-US') : ''}</Typography>
                                 </Box>
                               )}
                               {(visibleColumns.minStock || visibleColumns.maxStock) && (
                                 <Box>
                                   <Typography variant="caption" color="text.secondary">Định mức tồn</Typography>
                                   <Typography variant="body2">
-                                    {(item.raw?.minStock ?? 0)} - {(item.raw?.maxStock ?? 999999999).toLocaleString('vi-VN')}
+                                    {(item.raw?.minStock ?? 0)} - {(item.raw?.maxStock ?? 999999999).toLocaleString('en-US')}
                                   </Typography>
                                 </Box>
                               )}
@@ -2211,8 +2216,8 @@ export default function ProductsPage() {
                         <TableRow key={idx}>
                           <TableCell>{row.productCode || '(Tự động)'}</TableCell>
                           <TableCell>{row.name}</TableCell>
-                          <TableCell align="right">{Number(row.price) ? Number(row.price).toLocaleString('vi-VN') : ''}</TableCell>
-                          <TableCell align="right">{Number(row.costPrice) ? Number(row.costPrice).toLocaleString('vi-VN') : ''}</TableCell>
+                          <TableCell align="right">{Number(row.price) ? Number(row.price).toLocaleString('en-US') : ''}</TableCell>
+                          <TableCell align="right">{Number(row.costPrice) ? Number(row.costPrice).toLocaleString('en-US') : ''}</TableCell>
                           <TableCell align="right">{row.stock !== '' && row.stock != null ? String(row.stock) : ''}</TableCell>
                           <TableCell>{row.category}</TableCell>
                           <TableCell>{row.brand}</TableCell>
@@ -2448,20 +2453,22 @@ export default function ProductsPage() {
                   <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 2 }}>
                     <TextField
                       label="Giá vốn"
-                      type="number"
                       value={productForm.cost}
-                      onChange={(event) => setProductForm((prev) => ({ ...prev, cost: event.target.value }))}
+                      onChange={(event) => {
+                        const typed = normalizeMoneyTyping(event.target.value);
+                        setProductForm((prev) => ({ ...prev, cost: typed.display }));
+                      }}
                       onFocus={(e) => e.target.select()}
-                      onWheel={(e) => e.target.blur()}
                       fullWidth
                     />
                     <TextField
                       label="Giá bán"
-                      type="number"
                       value={productForm.price}
-                      onChange={(event) => setProductForm((prev) => ({ ...prev, price: event.target.value }))}
+                      onChange={(event) => {
+                        const typed = normalizeMoneyTyping(event.target.value);
+                        setProductForm((prev) => ({ ...prev, price: typed.display }));
+                      }}
                       onFocus={(e) => e.target.select()}
-                      onWheel={(e) => e.target.blur()}
                       fullWidth
                     />
                   </Box>
@@ -2744,9 +2751,9 @@ export default function ProductsPage() {
                       value={row.cost}
                       onFocus={(e) => e.target.select()}
                       onChange={(event) => {
-                        const value = event.target.value;
+                        const typed = normalizeMoneyTyping(event.target.value);
                         setVariantRows((prev) =>
-                          prev.map((item, idx) => (idx === index ? { ...item, cost: value } : item))
+                          prev.map((item, idx) => (idx === index ? { ...item, cost: typed.display } : item))
                         );
                       }}
                     />
@@ -2755,9 +2762,9 @@ export default function ProductsPage() {
                       value={row.price}
                       onFocus={(e) => e.target.select()}
                       onChange={(event) => {
-                        const value = event.target.value;
+                        const typed = normalizeMoneyTyping(event.target.value);
                         setVariantRows((prev) =>
-                          prev.map((item, idx) => (idx === index ? { ...item, price: value } : item))
+                          prev.map((item, idx) => (idx === index ? { ...item, price: typed.display } : item))
                         );
                       }}
                     />

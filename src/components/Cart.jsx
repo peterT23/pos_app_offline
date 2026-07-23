@@ -250,7 +250,7 @@ export default function Cart({ items = [], onUpdateQty, onRemove, onCheckout }) 
                     secondary={
                       <Box>
                         <Typography variant="body2" color="text.secondary">
-                          {item.product.price.toLocaleString('vi-VN')} đ
+                          {item.product.price.toLocaleString('en-US')} đ
                         </Typography>
                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 1 }}>
                           {/* Button giảm số lượng */}
@@ -290,7 +290,7 @@ export default function Cart({ items = [], onUpdateQty, onRemove, onCheckout }) 
                             color="primary"
                             sx={{ ml: 'auto', fontWeight: 600 }}
                           >
-                            {(item.product.price * item.qty).toLocaleString('vi-VN')} đ
+                            {(item.product.price * item.qty).toLocaleString('en-US')} đ
                           </Typography>
 
                           {/* Button xóa */}
@@ -324,7 +324,7 @@ export default function Cart({ items = [], onUpdateQty, onRemove, onCheckout }) 
             <Typography variant="h6">Tổng cộng:</Typography>
             {/* Text hiển thị tổng tiền với màu primary, font đậm */}
             <Typography variant="h5" color="primary" sx={{ fontWeight: 'bold' }}>
-              {calculateTotal().toLocaleString('vi-VN')} đ
+              {calculateTotal().toLocaleString('en-US')} đ
             </Typography>
           </Box>
         </Box>
@@ -353,7 +353,7 @@ export default function Cart({ items = [], onUpdateQty, onRemove, onCheckout }) 
         <DialogContent>
           <Box sx={{ mb: 3 }}>
             <Typography variant="h6" gutterBottom>
-              Tổng tiền: {calculateTotal().toLocaleString('vi-VN')} đ
+              Tổng tiền: {calculateTotal().toLocaleString('en-US')} đ
             </Typography>
           </Box>
 

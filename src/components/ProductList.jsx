@@ -15,14 +15,11 @@
 // - useEffect: Side effects (đóng popup khi click outside, auto-focus)
 // - useRef: Reference đến DOM elements (để focus input)
 import { useState, useEffect, useRef } from 'react';
-
-// Material-UI Components
-// Ưu điểm: Component library đẹp, responsive, accessible, theme support
-// Nhược điểm: Bundle size lớn (~200KB), có thể overkill cho project nhỏ
-// Alternative: 
-//   - Tailwind CSS: Utility-first, nhẹ hơn nhưng phải tự build components
-//   - Chakra UI: Tương tự MUI nhưng nhẹ hơn
-//   - Ant Design: Component library khác, phổ biến ở châu Á
+import {
+  formatMoneyInput,
+  normalizeMoneyTyping,
+  parseMoneyInput,
+} from '../utils/moneyFormat';
 import {
   Box,      // Container component, tương đương <div> nhưng có sx prop
   List,     // List container (ul)
@@ -53,7 +50,8 @@ import {
  * Props:
  * - items: Array<{product, qty, discount?, discountType?}> - Danh sách sản phẩm trong hóa đơn
  * - onUpdateQty: function(productLocalId, newQty)
- * - onUpdateDiscount: function(productLocalId, discount, discountType) - discountType: 'vnd' | 'percent'
+ * - onUpdateDiscount: function(productLocalId, discount, discountType) - legacy
+ * - onUpdatePricing: function(productLocalId, { price, discount, discountType }) - đủ 3 trường như KiotViet
  * - onRemove: function(productLocalId)
  * - onAddToCart: function(product) - Thêm sản phẩm vào giỏ
  */
@@ -61,6 +59,7 @@ export default function ProductList({
   items = [], 
   onUpdateQty, 
   onUpdateDiscount,
+  onUpdatePricing,
   onRemove,
   minQty = 1,
   getMaxQty,
@@ -69,10 +68,61 @@ export default function ProductList({
 }) {
   const [qtyInputs, setQtyInputs] = useState({});
   const [discountPopup, setDiscountPopup] = useState(null); // { productLocalId, anchorEl }
-  const [discountInputs, setDiscountInputs] = useState({}); // { productLocalId: { value, type } }
-  const discountInputRefs = useRef({}); // Refs cho các TextField giảm giá
-  const discountTimerRef = useRef(null); // Ref để lưu timer cho cleanup
-  const discountInputsRef = useRef({}); // Ref giữ giá trị mới nhất để listener click-outside đọc đúng
+  // { unitPrice, discount, type, sellPrice } — 3 ô liên kết
+  const [discountInputs, setDiscountInputs] = useState({});
+  const discountInputRefs = useRef({}); // Refs cho TextField giảm giá (focus mặc định)
+  const discountTimerRef = useRef(null);
+  const discountInputsRef = useRef({});
+
+  const parseMoney = (value) => parseMoneyInput(value);
+
+  const calcSellFromUnitDiscount = (unit, discount, type) => {
+    const u = Math.max(0, Number(unit) || 0);
+    const d = Math.max(0, Number(discount) || 0);
+    if (type === 'percent') {
+      return Math.max(0, Math.round(u * (1 - Math.min(d, 100) / 100)));
+    }
+    return Math.max(0, Math.round(u - d));
+  };
+
+  const formatMoneyField = (num, { allowEmpty = false } = {}) =>
+    formatMoneyInput(num, { allowEmpty });
+
+  const formatDiscountField = (num, type, { allowEmpty = false } = {}) => {
+    if (type === 'percent') {
+      if (allowEmpty && (num === '' || num === null || num === undefined)) return '';
+      const n = Number(num) || 0;
+      // % giữ số thập phân nhẹ nếu có
+      return String(n);
+    }
+    return formatMoneyField(num, { allowEmpty });
+  };
+
+  const buildPricingState = (item) => {
+    const unit = Math.max(0, Number(item?.product?.price) || 0);
+    const type = item?.discountType || 'vnd';
+    const discount = Math.max(0, Number(item?.discount) || 0);
+    const sell = calcSellFromUnitDiscount(unit, discount, type);
+    return {
+      unitPrice: formatMoneyField(unit),
+      discount: formatDiscountField(discount, type),
+      type,
+      sellPrice: formatMoneyField(sell),
+    };
+  };
+
+  const applyPricingToParent = (productLocalId) => {
+    const input = discountInputsRef.current[productLocalId];
+    if (!input) return;
+    const price = Math.max(0, Math.round(parseMoney(input.unitPrice)));
+    const discount = Math.max(0, parseMoney(input.discount));
+    const discountType = input.type === 'percent' ? 'percent' : 'vnd';
+    if (onUpdatePricing) {
+      onUpdatePricing(productLocalId, { price, discount, discountType });
+    } else if (onUpdateDiscount) {
+      onUpdateDiscount(productLocalId, discount, discountType);
+    }
+  };
 
   /**
    * HANDLER: Xử lý thay đổi số lượng trong input
@@ -191,76 +241,146 @@ export default function ProductList({
     }
   };
 
-  // Xử lý mở popup giảm giá
+  // Xử lý mở popup giảm giá / chỉnh giá
   const handlePriceClick = (event, item) => {
     if (disableDiscount) return;
     const productLocalId = item.product.localId;
     setDiscountPopup({ productLocalId, anchorEl: event.currentTarget });
-    
-    // Khởi tạo giá trị discount nếu chưa có
-    if (!discountInputs[productLocalId]) {
-      const discount = item.discount || 0;
-      const discountType = item.discountType || 'vnd';
-      setDiscountInputs(prev => ({
-        ...prev,
-        [productLocalId]: { value: discount.toString(), type: discountType }
-      }));
-    }
-    
-    // Tự động focus và select text sau khi popup mở
-    // Sử dụng requestAnimationFrame để đảm bảo DOM đã render xong, sau đó setTimeout để đảm bảo input đã sẵn sàng
+    setDiscountInputs((prev) => ({
+      ...prev,
+      [productLocalId]: buildPricingState(item),
+    }));
+
     requestAnimationFrame(() => {
       setTimeout(() => {
         const inputElement = discountInputRefs.current[productLocalId];
         if (inputElement) {
           inputElement.focus();
-          // Sử dụng setTimeout nhỏ để đảm bảo focus đã hoàn tất trước khi select
-          setTimeout(() => {
-            inputElement.select();
-          }, 10);
+          setTimeout(() => inputElement.select(), 10);
         }
-      }, 200); // Delay 200ms để đảm bảo popup đã render xong
+      }, 200);
     });
   };
 
-  // Đóng popup giảm giá
   const handleDiscountClose = () => {
     setDiscountPopup(null);
   };
 
-  // Xử lý thay đổi discount input
-  const handleDiscountInputChange = (productLocalId, value) => {
-    setDiscountInputs(prev => ({
-      ...prev,
-      [productLocalId]: {
-        ...prev[productLocalId],
-        value: value === '' ? '' : value.replace(/[^\d.]/g, '')
-      }
-    }));
+  const patchPricing = (productLocalId, patch) => {
+    setDiscountInputs((prev) => {
+      const cur = prev[productLocalId] || { unitPrice: '0', discount: '0', type: 'vnd', sellPrice: '0' };
+      const next = { ...cur, ...patch };
+      discountInputsRef.current[productLocalId] = next;
+      return { ...prev, [productLocalId]: next };
+    });
   };
 
-  // Xử lý thay đổi discount type (VND hoặc %)
+  // Đổi đơn giá → giữ giảm giá, tính lại giá bán
+  const handleUnitPriceChange = (productLocalId, raw) => {
+    const typed = normalizeMoneyTyping(raw);
+    const cur = discountInputsRef.current[productLocalId] || {};
+    const type = cur.type || 'vnd';
+    const discount = parseMoney(cur.discount);
+    const unit = typed.number;
+    const sell = calcSellFromUnitDiscount(unit, discount, type);
+    patchPricing(productLocalId, {
+      unitPrice: typed.display,
+      sellPrice: formatMoneyField(sell, { allowEmpty: typed.digits === '' }),
+    });
+  };
+
+  // Đổi giảm giá → giữ đơn giá, tính lại giá bán
+  const handleDiscountInputChange = (productLocalId, raw) => {
+    const cur = discountInputsRef.current[productLocalId] || {};
+    const type = cur.type || 'vnd';
+    const unit = parseMoney(cur.unitPrice);
+
+    if (type === 'percent') {
+      const cleaned = raw === '' ? '' : raw.replace(/[^\d.]/g, '');
+      let discount = cleaned === '' ? 0 : parseFloat(cleaned) || 0;
+      if (discount > 100) discount = 100;
+      const sell = calcSellFromUnitDiscount(unit, discount, type);
+      patchPricing(productLocalId, {
+        discount: cleaned,
+        sellPrice: formatMoneyField(sell, { allowEmpty: cleaned === '' }),
+      });
+      return;
+    }
+
+    const typed = normalizeMoneyTyping(raw);
+    const discount = typed.number;
+    const sell = calcSellFromUnitDiscount(unit, discount, type);
+    patchPricing(productLocalId, {
+      discount: typed.display,
+      sellPrice: formatMoneyField(sell, { allowEmpty: typed.digits === '' }),
+    });
+  };
+
+  // Đổi loại giảm VND/% → tính lại giá bán
   const handleDiscountTypeChange = (productLocalId, type) => {
-    setDiscountInputs(prev => ({
-      ...prev,
-      [productLocalId]: {
-        ...prev[productLocalId],
-        type
-      }
-    }));
+    const cur = discountInputsRef.current[productLocalId] || {};
+    const unit = parseMoney(cur.unitPrice);
+    let discount = parseMoney(cur.discount);
+    if (type === 'percent' && discount > 100) discount = 100;
+    const sell = calcSellFromUnitDiscount(unit, discount, type);
+    const next = {
+      type,
+      discount: formatDiscountField(discount, type),
+      sellPrice: formatMoneyField(sell),
+      unitPrice: formatMoneyField(unit),
+    };
+    patchPricing(productLocalId, next);
+    discountInputsRef.current[productLocalId] = {
+      ...(discountInputsRef.current[productLocalId] || {}),
+      ...next,
+    };
+    if (onUpdatePricing) {
+      onUpdatePricing(productLocalId, {
+        price: Math.round(unit),
+        discount,
+        discountType: type,
+      });
+    } else if (onUpdateDiscount) {
+      onUpdateDiscount(productLocalId, discount, type);
+    }
   };
 
-  // Luôn đồng bộ ref với state để listener click-outside đọc được giá trị mới nhất
+  // Đổi giá bán → nếu tăng: đẩy đơn giá; nếu giảm: tính giảm giá
+  const handleSellPriceChange = (productLocalId, raw) => {
+    const typed = normalizeMoneyTyping(raw);
+    const cur = discountInputsRef.current[productLocalId] || {};
+    const type = cur.type || 'vnd';
+    const unit = parseMoney(cur.unitPrice);
+    const sell = typed.number;
+
+    if (sell > unit) {
+      patchPricing(productLocalId, {
+        unitPrice: typed.display || '0',
+        discount: formatDiscountField(0, 'vnd'),
+        type: 'vnd',
+        sellPrice: typed.display,
+      });
+      return;
+    }
+
+    if (type === 'percent') {
+      const pct = unit > 0 ? Math.round(((unit - sell) / unit) * 10000) / 100 : 0;
+      patchPricing(productLocalId, {
+        discount: String(Math.max(0, Math.min(100, pct))),
+        sellPrice: typed.display,
+      });
+    } else {
+      patchPricing(productLocalId, {
+        discount: formatMoneyField(Math.max(0, Math.round(unit - sell))),
+        sellPrice: typed.display,
+      });
+    }
+  };
+
   discountInputsRef.current = discountInputs;
 
-  // Áp dụng discount khi blur hoặc enter (hoặc khi click ra ngoài)
   const handleDiscountBlur = (productLocalId) => {
-    const input = discountInputsRef.current[productLocalId];
-    if (input && onUpdateDiscount) {
-      const discount = parseFloat(input.value) || 0;
-      onUpdateDiscount(productLocalId, discount, input.type);
-    }
-    // Không đóng popup ngay, để người dùng có thể chỉnh sửa tiếp
+    applyPricingToParent(productLocalId);
   };
 
   // Tính giá bán sau khi giảm giá
@@ -505,7 +625,7 @@ export default function ProductList({
                     <Box sx={{ position: 'relative' }}>
                     <TextField
                       type="text"
-                      value={calculateFinalPrice(item).toLocaleString('vi-VN')}
+                      value={calculateFinalPrice(item).toLocaleString('en-US')}
                       onClick={(e) => handlePriceClick(e, item)}
                       size="small"
                       autoFocus
@@ -557,12 +677,12 @@ export default function ProductList({
                       >
                         {item.discountType === 'percent' 
                           ? `- ${item.discount}%`
-                          : `- ${item.discount.toLocaleString('vi-VN')}`
+                          : `- ${item.discount.toLocaleString('en-US')}`
                         }
                       </Typography>
                     )}
                     </Box>
-                    {/* Popup giảm giá */}
+                    {/* Popup chỉnh giá: Đơn giá / Giảm giá / Giá bán (3 ô liên kết) */}
                     {!disableDiscount && discountPopup && discountPopup.productLocalId === item.product.localId && (
                       <Paper
                         className="discount-popup"
@@ -572,116 +692,111 @@ export default function ProductList({
                           right: 0,
                           mt: 0.5,
                           p: 1.5,
-                          minWidth: 250,
+                          minWidth: 280,
                           zIndex: 1300,
                           boxShadow: 4,
                         }}
                       >
-                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-                          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <Typography variant="body2">Đơn giá:</Typography>
-                            <Typography variant="body2" sx={{ fontWeight: 500 }}>
-                              {item.product.price.toLocaleString('vi-VN')}
-                            </Typography>
-                          </Box>
-                          <Box>
-                            <Typography variant="body2" sx={{ mb: 0.5 }}>Giảm giá:</Typography>
-                            <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center' }}>
-                              <TextField
-                                inputRef={(el) => {
-                                  if (el) {
-                                    // Lưu reference đến input element
-                                    const inputElement = el.querySelector('input');
-                                    if (inputElement) {
-                                      discountInputRefs.current[item.product.localId] = inputElement;
-                                      
-                                      // Nếu popup vừa mở cho sản phẩm này, tự động focus và select ngay
-                                      // Kiểm tra xem popup có đang mở cho sản phẩm này không
-                                      if (discountPopup && discountPopup.productLocalId === item.product.localId) {
-                                        // Sử dụng requestAnimationFrame và setTimeout để đảm bảo element đã được mount hoàn toàn
-                                        requestAnimationFrame(() => {
-                                          setTimeout(() => {
-                                            inputElement.focus();
-                                            // Sử dụng setTimeout nhỏ để đảm bảo focus đã hoàn tất trước khi select
-                                            setTimeout(() => {
-                                              inputElement.select();
-                                            }, 10);
-                                          }, 50);
-                                        });
+                        {(() => {
+                          const pricing = discountInputs[item.product.localId] || buildPricingState(item);
+                          const fieldSx = {
+                            '& .MuiOutlinedInput-root': {
+                              '& fieldset': { borderColor: 'primary.main' },
+                            },
+                            '& input': {
+                              padding: '4px 8px',
+                              fontSize: '0.875rem',
+                              textAlign: 'right',
+                            },
+                          };
+                          return (
+                            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 1 }}>
+                                <Typography variant="body2" sx={{ minWidth: 72 }}>Đơn giá:</Typography>
+                                <TextField
+                                  size="small"
+                                  value={pricing.unitPrice}
+                                  onChange={(e) => handleUnitPriceChange(item.product.localId, e.target.value)}
+                                  onFocus={(e) => setTimeout(() => e.target.select(), 10)}
+                                  onBlur={() => handleDiscountBlur(item.product.localId)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') e.target.blur();
+                                  }}
+                                  sx={{ ...fieldSx, width: 140 }}
+                                />
+                              </Box>
+
+                              <Box>
+                                <Typography variant="body2" sx={{ mb: 0.5 }}>Giảm giá:</Typography>
+                                <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center' }}>
+                                  <TextField
+                                    inputRef={(el) => {
+                                      if (el) {
+                                        const inputElement = el.querySelector('input');
+                                        if (inputElement) {
+                                          discountInputRefs.current[item.product.localId] = inputElement;
+                                        }
                                       }
-                                    }
-                                  }
-                                }}
-                                size="small"
-                                value={discountInputs[item.product.localId]?.value || ''}
-                                onChange={(e) => handleDiscountInputChange(item.product.localId, e.target.value)}
-                                onFocus={(e) => {
-                                  // Tự động select toàn bộ text khi focus
-                                  // Sử dụng setTimeout nhỏ để đảm bảo focus đã hoàn tất trước khi select
-                                  setTimeout(() => {
-                                    e.target.select();
-                                  }, 10);
-                                }}
-                                onBlur={() => handleDiscountBlur(item.product.localId)}
-                                onKeyDown={(e) => {
-                                  if (e.key === 'Enter') {
-                                    e.target.blur();
-                                  }
-                                }}
-                                placeholder="0"
-                                inputProps={{
-                                  style: { 
-                                    padding: '4px 8px',
-                                    fontSize: '0.875rem'
-                                  }
-                                }}
+                                    }}
+                                    size="small"
+                                    value={pricing.discount}
+                                    onChange={(e) => handleDiscountInputChange(item.product.localId, e.target.value)}
+                                    onFocus={(e) => setTimeout(() => e.target.select(), 10)}
+                                    onBlur={() => handleDiscountBlur(item.product.localId)}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Enter') e.target.blur();
+                                    }}
+                                    placeholder="0"
+                                    sx={{ ...fieldSx, flexGrow: 1 }}
+                                  />
+                                  <Button
+                                    size="small"
+                                    variant={pricing.type === 'vnd' ? 'contained' : 'outlined'}
+                                    onClick={() => handleDiscountTypeChange(item.product.localId, 'vnd')}
+                                    sx={{ minWidth: 56, fontSize: '0.75rem' }}
+                                  >
+                                    VND
+                                  </Button>
+                                  <Button
+                                    size="small"
+                                    variant={pricing.type === 'percent' ? 'contained' : 'outlined'}
+                                    onClick={() => handleDiscountTypeChange(item.product.localId, 'percent')}
+                                    sx={{ minWidth: 48, fontSize: '0.75rem' }}
+                                  >
+                                    %
+                                  </Button>
+                                </Box>
+                              </Box>
+
+                              <Box
                                 sx={{
-                                  flexGrow: 1,
-                                  '& .MuiOutlinedInput-root': {
-                                    '& fieldset': {
-                                      borderColor: 'primary.main',
-                                    },
-                                  },
+                                  display: 'flex',
+                                  justifyContent: 'space-between',
+                                  alignItems: 'center',
+                                  gap: 1,
+                                  pt: 1,
+                                  borderTop: '1px solid',
+                                  borderColor: 'divider',
                                 }}
-                              />
-                              <Button
-                                size="small"
-                                variant={discountInputs[item.product.localId]?.type === 'vnd' ? 'contained' : 'outlined'}
-                                onClick={() => handleDiscountTypeChange(item.product.localId, 'vnd')}
-                                sx={{ minWidth: 60, fontSize: '0.75rem' }}
                               >
-                                VND
-                              </Button>
-                              <Button
-                                size="small"
-                                variant={discountInputs[item.product.localId]?.type === 'percent' ? 'contained' : 'outlined'}
-                                onClick={() => handleDiscountTypeChange(item.product.localId, 'percent')}
-                                sx={{ minWidth: 60, fontSize: '0.75rem' }}
-                              >
-                                %
-                              </Button>
+                                <Typography variant="body2" sx={{ fontWeight: 600, minWidth: 72 }}>
+                                  Giá bán:
+                                </Typography>
+                                <TextField
+                                  size="small"
+                                  value={pricing.sellPrice}
+                                  onChange={(e) => handleSellPriceChange(item.product.localId, e.target.value)}
+                                  onFocus={(e) => setTimeout(() => e.target.select(), 10)}
+                                  onBlur={() => handleDiscountBlur(item.product.localId)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') e.target.blur();
+                                  }}
+                                  sx={{ ...fieldSx, width: 140 }}
+                                />
+                              </Box>
                             </Box>
-                          </Box>
-                          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', pt: 1, borderTop: '1px solid', borderColor: 'divider' }}>
-                            <Typography variant="body2" sx={{ fontWeight: 600 }}>Giá bán:</Typography>
-                            <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                              {(() => {
-                                const input = discountInputs[item.product.localId];
-                                if (!input || !input.value || input.value === '') {
-                                  return item.product.price.toLocaleString('vi-VN');
-                                }
-                                const discount = parseFloat(input.value) || 0;
-                                if (input.type === 'percent') {
-                                  const finalPrice = item.product.price * (1 - discount / 100);
-                                  return Math.round(finalPrice).toLocaleString('vi-VN');
-                                } else {
-                                  const finalPrice = Math.max(0, item.product.price - discount);
-                                  return finalPrice.toLocaleString('vi-VN');
-                                }
-                              })()}
-                            </Typography>
-                          </Box>
-                        </Box>
+                          );
+                        })()}
                       </Paper>
                     )}
                   </Box>
@@ -689,7 +804,7 @@ export default function ProductList({
                   {/* Thành tiền */}
                   <Box sx={{ minWidth: 120, textAlign: 'right' }}>
                     <Typography variant="body2" sx={{ fontWeight: 600, cursor: 'pointer' }} onClick={(e) => handlePriceClick(e, item)}>
-                      {(calculateFinalPrice(item) * item.qty).toLocaleString('vi-VN')} đ
+                      {(calculateFinalPrice(item) * item.qty).toLocaleString('en-US')} đ
                     </Typography>
                   </Box>
 

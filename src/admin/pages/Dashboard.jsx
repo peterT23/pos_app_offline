@@ -44,21 +44,21 @@ export default function Dashboard() {
   const summaryItems = [
     {
       label: 'Doanh thu',
-      value: reportData.totalSales.toLocaleString('vi-VN'),
+      value: reportData.totalSales.toLocaleString('en-US'),
       note: `${reportData.orderCount} hóa đơn`,
       icon: <AttachMoneyIcon fontSize="small" />,
       color: '#1976d2',
     },
     {
       label: 'Trả hàng',
-      value: reportData.totalReturns.toLocaleString('vi-VN'),
+      value: reportData.totalReturns.toLocaleString('en-US'),
       note: '',
       icon: <UndoIcon fontSize="small" />,
       color: '#f57c00',
     },
     {
       label: 'Doanh thu thuần',
-      value: reportData.netSales.toLocaleString('vi-VN'),
+      value: reportData.netSales.toLocaleString('en-US'),
       note: '',
       icon: reportData.totalProfit >= 0 ? <TrendingUpIcon fontSize="small" /> : <TrendingDownIcon fontSize="small" />,
       color: reportData.totalProfit >= 0 ? '#2e7d32' : '#d32f2f',
@@ -382,13 +382,13 @@ export default function Dashboard() {
                     <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap', mb: 2 }}>
                       <Chip label={`Đơn hàng: ${reportData.orderCount}`} variant="outlined" />
                       <Chip label={`Trả hàng: ${reportData.returnCount}`} variant="outlined" />
-                      <Chip label={`Giá vốn: ${reportData.totalCost.toLocaleString('vi-VN')}`} color="default" />
+                      <Chip label={`Giá vốn: ${reportData.totalCost.toLocaleString('en-US')}`} color="default" />
                       <Chip
-                        label={`Lợi nhuận: ${reportData.totalProfit.toLocaleString('vi-VN')}`}
+                        label={`Lợi nhuận: ${reportData.totalProfit.toLocaleString('en-US')}`}
                         color={reportData.totalProfit >= 0 ? 'success' : 'error'}
                       />
-                      <Chip label={`Doanh thu: ${reportData.totalSales.toLocaleString('vi-VN')}`} color="primary" />
-                      <Chip label={`Trả hàng: ${reportData.totalReturns.toLocaleString('vi-VN')}`} color="warning" />
+                      <Chip label={`Doanh thu: ${reportData.totalSales.toLocaleString('en-US')}`} color="primary" />
+                      <Chip label={`Trả hàng: ${reportData.totalReturns.toLocaleString('en-US')}`} color="warning" />
                       <Chip label={periodLabel()} variant="outlined" />
                     </Box>
                     {(() => {
@@ -416,7 +416,7 @@ export default function Dashboard() {
                               <Box key={bucket.label} sx={{ minWidth: 28 }}>
                                 <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'flex-end', height: 220 }}>
                                   <Tooltip
-                                    title={`${bucket.label} · Giá vốn: ${bucket.totalCost.toLocaleString('vi-VN')} · Lợi nhuận: ${bucket.totalProfit.toLocaleString('vi-VN')} · Doanh thu: ${bucket.totalSales.toLocaleString('vi-VN')} · Trả hàng: ${bucket.totalReturns.toLocaleString('vi-VN')}`}
+                                    title={`${bucket.label} · Giá vốn: ${bucket.totalCost.toLocaleString('en-US')} · Lợi nhuận: ${bucket.totalProfit.toLocaleString('en-US')} · Doanh thu: ${bucket.totalSales.toLocaleString('en-US')} · Trả hàng: ${bucket.totalReturns.toLocaleString('en-US')}`}
                                     arrow
                                   >
                                     <Box
@@ -518,7 +518,7 @@ export default function Dashboard() {
                   const timeLabel = item.createdAt
                     ? new Date(item.createdAt).toLocaleString('vi-VN')
                     : '';
-                  const amountLabel = (Number(item.amount) || 0).toLocaleString('vi-VN');
+                  const amountLabel = (Number(item.amount) || 0).toLocaleString('en-US');
                   const actionLabel = item.type === 'return' ? 'vừa trả hàng' : 'vừa bán đơn hàng';
                   const linkPath = item.type === 'return' ? '/returns' : '/orders';
                   const linkCode = item.code || item.localId || '';

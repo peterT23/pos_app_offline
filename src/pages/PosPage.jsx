@@ -82,6 +82,7 @@ import { BANK_OPTIONS, BANK_OPTION_MAP } from '../constants/bankOptions';
 import { displayOrderCode, displayReturnCode, displayProductCode } from '../utils/codeDisplay';
 import { isInvoiceDirty, useInvoiceDraft } from './pos/useInvoiceDraft';
 import { usePrintService } from './pos/usePrintService';
+import { formatMoneyInput, normalizeMoneyTyping } from '../utils/moneyFormat';
 
 const DEFAULT_LOYALTY_SETTINGS = {
   enabled: true,
@@ -212,8 +213,11 @@ export default function PosPage() {
 
   const [productMiniOpen, setProductMiniOpen] = useState(false);
   const [productMini, setProductMini] = useState(null);
-  const [returnSearchField, setReturnSearchField] = useState('orderCode');
-  const [returnSearchTerm, setReturnSearchTerm] = useState('');
+  const [returnFilterOrderCode, setReturnFilterOrderCode] = useState('');
+  const [returnFilterShippingCode, setReturnFilterShippingCode] = useState('');
+  const [returnFilterCustomer, setReturnFilterCustomer] = useState('');
+  const [returnFilterProductCode, setReturnFilterProductCode] = useState('');
+  const [returnFilterProductName, setReturnFilterProductName] = useState('');
   const [returnFromDate, setReturnFromDate] = useState('');
   const [returnToDate, setReturnToDate] = useState('');
   const [returnPage, setReturnPage] = useState(1);
@@ -363,6 +367,254 @@ export default function PosPage() {
     return name || nickname || '';
   };
 
+  /** Giá bán thực tế trên dòng HĐ (sau giảm giá item). */
+  const resolveSoldUnitPrice = (item) => {
+    if (!item) return 0;
+    const base = Number(item.basePrice);
+    const discount = Number(item.discount) || 0;
+    const discountType = item.discountType || 'vnd';
+    const price = Number(item.price) || 0;
+
+    if (Number.isFinite(base) && base > 0 && (discount > 0 || discountType === 'percent')) {
+      if (discountType === 'percent') {
+        return Math.max(0, Math.round(base * (1 - discount / 100)));
+      }
+      return Math.max(0, base - discount);
+    }
+    return price;
+  };
+
+  /**
+   * Chuẩn hóa dòng giỏ / dòng trả về giá gốc + giảm + giá bán.
+   * - Giỏ bán/đổi: product.price = giá catalog, discount trên item.
+   * - Dòng còn lại sau trả: có basePrice/discount gốc; product.price = giá đã bán.
+   */
+  const normalizeCartLine = (item) => {
+    const qty = Number(item?.qty) || 0;
+    const product = item?.product || {};
+    const storedUnit = Number(product.price) || 0;
+    const discount = Number(item?.discount) || 0;
+    const discountType = item?.discountType || 'vnd';
+    const explicitBase = Number(item?.basePrice);
+    const hasDiscount = discount > 0 || discountType === 'percent';
+
+    let basePrice;
+    let unitPrice;
+
+    if (Number.isFinite(explicitBase) && explicitBase > 0) {
+      basePrice = explicitBase;
+      if (hasDiscount) {
+        unitPrice =
+          discountType === 'percent'
+            ? Math.max(0, Math.round(basePrice * (1 - discount / 100)))
+            : Math.max(0, basePrice - discount);
+      } else {
+        unitPrice = storedUnit || basePrice;
+      }
+    } else if (hasDiscount) {
+      basePrice = storedUnit;
+      unitPrice =
+        discountType === 'percent'
+          ? Math.max(0, Math.round(basePrice * (1 - discount / 100)))
+          : Math.max(0, basePrice - discount);
+    } else {
+      basePrice = storedUnit;
+      unitPrice = storedUnit;
+    }
+
+    return {
+      product,
+      qty,
+      basePrice,
+      discount: hasDiscount ? discount : 0,
+      discountType,
+      unitPrice,
+      subtotal: unitPrice * qty,
+    };
+  };
+
+  const toOrderItemDoc = (orderLocalId, line) => ({
+    orderLocalId,
+    productLocalId: line.product?.localId,
+    productCode: line.product?.productCode || '',
+    productName: line.product?.name || '',
+    basePrice: Number(line.basePrice) || 0,
+    discount: Number(line.discount) || 0,
+    discountType: line.discountType || 'vnd',
+    price: Number(line.unitPrice) || 0,
+    qty: Number(line.qty) || 0,
+    subtotal: Number(line.subtotal) || 0,
+  });
+
+  const formatItemDiscountLabel = (item) => {
+    const discount = Number(item?.discount) || 0;
+    if (discount <= 0 && item?.discountType !== 'percent') return '—';
+    if ((item?.discountType || 'vnd') === 'percent') return `${discount}%`;
+    return discount.toLocaleString('en-US');
+  };
+
+  const calcAgeFromDob = (dob) => {
+    if (!dob) return '';
+    const d = new Date(dob);
+    if (Number.isNaN(d.getTime())) return '';
+    const now = new Date();
+    let age = now.getFullYear() - d.getFullYear();
+    const m = now.getMonth() - d.getMonth();
+    if (m < 0 || (m === 0 && now.getDate() < d.getDate())) age -= 1;
+    return age >= 0 ? String(age) : '';
+  };
+
+  const mapOrderItemToReturnLine = (item, product) => {
+    const soldUnit = resolveSoldUnitPrice(item);
+    const rawBase = Number(item.basePrice);
+    const discount = Number(item.discount) || 0;
+    const discountType = item.discountType || 'vnd';
+    const hasDiscount = discount > 0 || discountType === 'percent';
+    const basePrice = Number.isFinite(rawBase) && rawBase > 0
+      ? rawBase
+      : (hasDiscount ? (Number(item.price) || soldUnit) + (discountType === 'percent' ? 0 : discount) : soldUnit);
+    // Có giảm giá: product.price = giá gốc để ProductList (base - discount) ra đúng giá bán.
+    // Không giảm: product.price = giá đã bán.
+    return {
+      product: {
+        localId: item.productLocalId,
+        productCode: item.productCode || product?.productCode || '',
+        name: item.productName,
+        price: hasDiscount ? basePrice : soldUnit,
+        barcode: product?.barcode || '',
+        stock: product?.stock ?? 0,
+      },
+      basePrice: hasDiscount ? basePrice : soldUnit,
+      discount: hasDiscount ? discount : 0,
+      discountType,
+      qty: 0,
+      maxQty: Number(item.qty) || 0,
+    };
+  };
+
+  /** Chuẩn hóa dòng hàng để hiển thị trong popup chi tiết HĐ */
+  const normalizeHistoryLine = (it) => {
+    const qty = Number(it?.qty) || 0;
+    const soldUnit = resolveSoldUnitPrice(it);
+    const basePrice = Number(it?.basePrice) > 0 ? Number(it.basePrice) : (Number(it?.price) || soldUnit);
+    const subtotal = Number(it?.subtotal) || soldUnit * qty;
+    return {
+      ...it,
+      productLocalId: it?.productLocalId || '',
+      productCode: it?.productCode || '',
+      productName: it?.productName || it?.name || '',
+      qty,
+      basePrice,
+      discount: Number(it?.discount) || 0,
+      discountType: it?.discountType || 'vnd',
+      price: soldUnit,
+      subtotal,
+    };
+  };
+
+  /**
+   * Dựng lại đơn gốc từ đơn hiện tại + lịch sử trả/đổi (đi ngược từ phiếu mới → cũ).
+   * Dùng khi đơn cũ chưa có snapshot originalItems.
+   */
+  const reconstructOriginalItems = (currentItems, returnDetails) => {
+    const keyOf = (it) => String(it.productLocalId || it.productCode || it.productName || '').trim();
+    const map = new Map();
+
+    const apply = (items, sign) => {
+      (items || []).forEach((raw) => {
+        const it = normalizeHistoryLine(raw);
+        const key = keyOf(it);
+        if (!key) return;
+        const prev = map.get(key);
+        if (prev) {
+          const nextQty = (Number(prev.qty) || 0) + sign * (Number(it.qty) || 0);
+          map.set(key, {
+            ...prev,
+            qty: nextQty,
+            subtotal: (Number(prev.price) || 0) * nextQty,
+          });
+        } else {
+          const qty = sign * (Number(it.qty) || 0);
+          map.set(key, {
+            ...it,
+            qty,
+            subtotal: (Number(it.price) || 0) * qty,
+          });
+        }
+      });
+    };
+
+    apply(currentItems, 1);
+    const sorted = [...(returnDetails || [])].sort(
+      (a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0)
+    );
+    sorted.forEach((rd) => {
+      // Đảo ngược 1 lần đổi trả: bỏ hàng đổi, trả lại hàng đã trả
+      apply(rd.exchangeItems, -1);
+      apply(rd.returnItems, 1);
+    });
+
+    return Array.from(map.values())
+      .filter((it) => (Number(it.qty) || 0) > 0)
+      .map((it) => ({
+        ...it,
+        qty: Number(it.qty) || 0,
+        subtotal: (Number(it.price) || 0) * (Number(it.qty) || 0),
+      }));
+  };
+
+  /**
+   * Dựng trạng thái hiện tại từ đơn gốc + áp từng phiếu trả/đổi (cũ → mới).
+   * Đáng tin hơn order_items khi DB từng bị lệch do replace sai localId.
+   */
+  const reconstructCurrentItems = (originalItems, returnDetails) => {
+    const keyOf = (it) => String(it.productLocalId || it.productCode || it.productName || '').trim();
+    const map = new Map();
+
+    const apply = (items, sign) => {
+      (items || []).forEach((raw) => {
+        const it = normalizeHistoryLine(raw);
+        const key = keyOf(it);
+        if (!key) return;
+        const prev = map.get(key);
+        if (prev) {
+          const nextQty = (Number(prev.qty) || 0) + sign * (Number(it.qty) || 0);
+          // Khi thêm hàng đổi, ưu tiên giá/dòng mới hơn
+          const base = sign > 0 ? { ...it } : { ...prev };
+          map.set(key, {
+            ...base,
+            qty: nextQty,
+            subtotal: (Number(base.price) || Number(prev.price) || 0) * nextQty,
+          });
+        } else {
+          const qty = sign * (Number(it.qty) || 0);
+          map.set(key, {
+            ...it,
+            qty,
+            subtotal: (Number(it.price) || 0) * qty,
+          });
+        }
+      });
+    };
+
+    apply(originalItems, 1);
+    const sorted = [...(returnDetails || [])].sort(
+      (a, b) => (Number(a.createdAt) || 0) - (Number(b.createdAt) || 0)
+    );
+    sorted.forEach((rd) => {
+      apply(rd.returnItems, -1);
+      apply(rd.exchangeItems, 1);
+    });
+
+    return Array.from(map.values())
+      .filter((it) => (Number(it.qty) || 0) > 0)
+      .map((it) => ({
+        ...it,
+        qty: Number(it.qty) || 0,
+        subtotal: (Number(it.price) || 0) * (Number(it.qty) || 0),
+      }));
+  };
+
   const loadStores = useCallback(async () => {
     setStoreLoading(true);
     try {
@@ -432,20 +684,42 @@ export default function PosPage() {
       setInvoiceTabs(newTabs);
       setActiveInvoiceIndex(nextId);
 
-      // Map items backend -> cartItems của POS
+      // Map items backend -> cartItems của POS (khôi phục giảm giá item nếu có)
       await db.open();
       const mappedItems = await Promise.all(items.map(async (it) => {
         const productLocalId = String(it.productLocalId || '').trim();
         const product = productLocalId ? await db.products.get(productLocalId) : null;
+        const soldUnit = resolveSoldUnitPrice(it);
+        const discount = Number(it.discount) || 0;
+        const discountType = it.discountType || 'vnd';
+        const hasDiscount = discount > 0 || discountType === 'percent';
+        const basePrice = Number(it.basePrice) > 0
+          ? Number(it.basePrice)
+          : (hasDiscount ? soldUnit : (Number(it.price) || 0));
         const fallbackProduct = {
           localId: productLocalId || generateLocalId(),
           productCode: it.productCode || '',
           name: it.productName || '',
-          price: Number(it.price) || 0,
+          price: hasDiscount ? basePrice : soldUnit,
           allowPoints: true,
           stock: 0,
         };
-        return { product: product || fallbackProduct, qty: Number(it.qty) || 0 };
+        const resolved = product
+          ? { ...product, price: hasDiscount ? basePrice : (Number(product.price) || soldUnit) }
+          : fallbackProduct;
+        // Nếu product catalog khác giá lúc bán, ưu tiên giá trên hóa đơn
+        if (hasDiscount) {
+          resolved.price = basePrice;
+        } else if (Number(it.price) > 0) {
+          resolved.price = Number(it.price);
+        }
+        return {
+          product: resolved,
+          qty: Number(it.qty) || 0,
+          discount: hasDiscount ? discount : 0,
+          discountType,
+          basePrice: hasDiscount ? basePrice : Number(resolved.price) || 0,
+        };
       }));
 
       setInvoices((prev) => ({
@@ -511,23 +785,9 @@ export default function PosPage() {
       const products = await db.products.toArray();
       const productById = new Map(products.map((p) => [p.localId, p]));
 
-      const mappedReturnItems = items.map((it) => {
-        const p = productById.get(it.productLocalId);
-        return {
-          product: {
-            localId: it.productLocalId,
-            productCode: it.productCode || p?.productCode || '',
-            name: it.productName,
-            // Ưu tiên giá bán thực tế (đã giảm) để trả hàng đúng giá đã bán.
-            // basePrice có thể = 0 (không set), nên chỉ fallback khi price không có.
-            price: Number(it.price) || Number(it.basePrice) || 0,
-            barcode: p?.barcode || '',
-            stock: p?.stock ?? 0,
-          },
-          qty: 0,
-          maxQty: Number(it.qty) || 0,
-        };
-      });
+      const mappedReturnItems = items.map((it) =>
+        mapOrderItemToReturnLine(it, productById.get(it.productLocalId))
+      );
 
       updateCurrentInvoice({
         returnMode: true,
@@ -945,13 +1205,21 @@ export default function PosPage() {
     }
   }, [editCustomerDialogOpen, editCustomerTab, editCustomer]);
 
-  const returnSearchOptions = [
-    { value: 'orderCode', label: 'Theo mã hóa đơn' },
-    { value: 'shippingCode', label: 'Theo mã vận đơn bán' },
-    { value: 'customer', label: 'Theo khách hàng hoặc ĐT' },
-    { value: 'productCode', label: 'Theo mã hàng' },
-    { value: 'productName', label: 'Theo tên hàng' }
-  ];
+  const normalizePhoneDigits = (value) => String(value || '').replace(/\D/g, '');
+
+  const parseLocalDateStart = (yyyyMmDd) => {
+    if (!yyyyMmDd) return null;
+    const [y, m, d] = String(yyyyMmDd).split('-').map(Number);
+    if (!y || !m || !d) return null;
+    return new Date(y, m - 1, d, 0, 0, 0, 0).getTime();
+  };
+
+  const parseLocalDateEnd = (yyyyMmDd) => {
+    if (!yyyyMmDd) return null;
+    const [y, m, d] = String(yyyyMmDd).split('-').map(Number);
+    if (!y || !m || !d) return null;
+    return new Date(y, m - 1, d, 23, 59, 59, 999).getTime();
+  };
 
   const loadReturnOrders = async () => {
     try {
@@ -967,7 +1235,13 @@ export default function PosPage() {
       ]);
 
       const customerById = new Map(customers.map((customer) => [customer.localId, customer]));
-      const customerByPhone = new Map(customers.map((customer) => [customer.phone, customer]));
+      const customerByPhone = new Map();
+      customers.forEach((customer) => {
+        const phone = String(customer.phone || '').trim();
+        if (phone) customerByPhone.set(phone, customer);
+        const digits = normalizePhoneDigits(phone);
+        if (digits) customerByPhone.set(digits, customer);
+      });
       const productById = new Map(products.map((product) => [product.localId, product]));
 
       const orderItemsByOrder = new Map();
@@ -980,26 +1254,40 @@ export default function PosPage() {
 
       const returnEnriched = returns
         .map((returnItem) => {
+          const phone = String(returnItem.customerPhone || '').trim();
           const customer =
             (returnItem.customerLocalId && customerById.get(returnItem.customerLocalId)) ||
-            (returnItem.customerPhone && customerByPhone.get(returnItem.customerPhone));
+            (phone && (customerByPhone.get(phone) || customerByPhone.get(normalizePhoneDigits(phone))));
           return {
             ...returnItem,
-            customerLabel: formatCustomerLabel(customer) || returnItem.customerPhone || 'Khách lẻ',
+            customerLabel: formatCustomerLabel(customer) || phone || 'Khách lẻ',
+            customerName: formatCustomerLabel(customer) || returnItem.customerName || '',
+            customerPhone: phone || customer?.phone || '',
           };
         })
         .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
 
       // Có thể tồn tại bản ghi trùng mã hóa đơn do dữ liệu cũ/sync trước đây.
-      // Giữ 1 bản ghi mới nhất cho mỗi orderCode để tránh hiển thị lặp trong popup chọn hóa đơn trả.
+      // Giữ 1 bản ghi mới nhất cho mỗi orderCode; ưu tiên localId ≠ orderCode (UUID thật).
       const latestOrderByKey = new Map();
       orders.forEach((order) => {
         const key = String(order.orderCode || order.localId || '').trim();
         if (!key) return;
         const prev = latestOrderByKey.get(key);
+        if (!prev) {
+          latestOrderByKey.set(key, order);
+          return;
+        }
+        const prevIsCodeId = String(prev.localId) === String(prev.orderCode);
+        const curIsCodeId = String(order.localId) === String(order.orderCode);
+        if (prevIsCodeId && !curIsCodeId) {
+          latestOrderByKey.set(key, order);
+          return;
+        }
+        if (!prevIsCodeId && curIsCodeId) return;
         const prevTs = Number(prev?.updatedAt || prev?.createdAt || 0);
         const curTs = Number(order.updatedAt || order.createdAt || 0);
-        if (!prev || curTs >= prevTs) {
+        if (curTs >= prevTs) {
           latestOrderByKey.set(key, order);
         }
       });
@@ -1008,16 +1296,17 @@ export default function PosPage() {
       const enriched = dedupedOrders
         .filter(order => order.status !== 'returned')
         .map((order) => {
+          const phone = String(order.customerPhone || '').trim();
           const customer =
             (order.customerLocalId && customerById.get(order.customerLocalId)) ||
-            (order.customerPhone && customerByPhone.get(order.customerPhone));
+            (phone && (customerByPhone.get(phone) || customerByPhone.get(normalizePhoneDigits(phone))));
 
           const items = orderItemsByOrder.get(order.localId) || [];
           const productNames = items.map((item) => item.productName).filter(Boolean);
           const productCodes = items
             .map((item) => {
               const product = productById.get(item.productLocalId);
-              return product?.productCode || product?.barcode || '';
+              return item.productCode || product?.productCode || product?.barcode || item.barcode || '';
             })
             .filter(Boolean);
 
@@ -1025,9 +1314,28 @@ export default function PosPage() {
             (r) => r.orderCode === order.orderCode || r.orderLocalId === order.localId
           );
 
+          const itemsSoldTotal = items.reduce((sum, it) => {
+            const sold = resolveSoldUnitPrice(it);
+            const qty = Number(it.qty) || 0;
+            return sum + (Number(it.subtotal) || sold * qty);
+          }, 0);
+
+          const customerName =
+            formatCustomerLabel(customer) ||
+            order.customerName ||
+            order.customerLabel ||
+            '';
+          const customerPhone = phone || customer?.phone || '';
+
           return {
             ...order,
-            customerLabel: formatCustomerLabel(customer) || order.customerPhone || 'Khách lẻ',
+            // Ưu tiên tổng theo dòng hàng (đã gồm giảm giá item) nếu có
+            totalAmount: items.length > 0 ? itemsSoldTotal : (Number(order.totalAmount) || 0),
+            subtotalAmount: items.length > 0 ? itemsSoldTotal : (Number(order.subtotalAmount) || 0),
+            customerName,
+            customerPhone,
+            customerLabel: customerName || customerPhone || 'Khách lẻ',
+            shippingCode: order.shippingCode || order.deliveryCode || '',
             productNames,
             productCodes,
             returnRecords: returnRecordsForOrder,
@@ -1055,61 +1363,114 @@ export default function PosPage() {
   }, [returnDialogOpen]);
 
   const filteredReturnOrders = useMemo(() => {
-    const term = returnSearchTerm.trim().toLowerCase();
-    const fromDateValue = returnFromDate ? new Date(returnFromDate).setHours(0, 0, 0, 0) : null;
-    const toDateValue = returnToDate ? new Date(returnToDate).setHours(23, 59, 59, 999) : null;
+    const orderCodeQ = returnFilterOrderCode.trim().toLowerCase();
+    const shippingQ = returnFilterShippingCode.trim().toLowerCase();
+    const customerQ = returnFilterCustomer.trim().toLowerCase();
+    const customerDigits = normalizePhoneDigits(returnFilterCustomer);
+    const productCodeQ = returnFilterProductCode.trim().toLowerCase();
+    const productNameQ = returnFilterProductName.trim().toLowerCase();
+    const fromDateValue = parseLocalDateStart(returnFromDate);
+    const toDateValue = parseLocalDateEnd(returnToDate);
 
-    return returnOrders.filter((order) => {
-      if (fromDateValue || toDateValue) {
-        const createdAtValue = order.createdAt ? new Date(order.createdAt).getTime() : 0;
-        if (fromDateValue && createdAtValue < fromDateValue) return false;
-        if (toDateValue && createdAtValue > toDateValue) return false;
-      }
+    return returnOrders
+      .filter((order) => {
+        if (fromDateValue || toDateValue) {
+          const createdAtValue = order.createdAt ? new Date(order.createdAt).getTime() : 0;
+          if (fromDateValue && createdAtValue < fromDateValue) return false;
+          if (toDateValue && createdAtValue > toDateValue) return false;
+        }
 
-      if (!term) return true;
-
-      if (returnSearchField === 'orderCode' || returnSearchField === 'shippingCode') {
-        return order.orderCode?.toLowerCase().includes(term);
-      }
-      if (returnSearchField === 'customer') {
-        return order.customerLabel?.toLowerCase().includes(term);
-      }
-      if (returnSearchField === 'productCode') {
-        return order.productCodes?.some((code) => code.toLowerCase().includes(term));
-      }
-      if (returnSearchField === 'productName') {
-        return order.productNames?.some((name) => name.toLowerCase().includes(term));
-      }
-      return true;
-    });
-  }, [returnOrders, returnSearchField, returnSearchTerm, returnFromDate, returnToDate]);
+        if (orderCodeQ) {
+          const code = String(order.orderCode || '').toLowerCase();
+          if (!code.includes(orderCodeQ)) return false;
+        }
+        if (shippingQ) {
+          const ship = String(order.shippingCode || '').toLowerCase();
+          if (!ship.includes(shippingQ)) return false;
+        }
+        if (customerQ) {
+          const name = String(order.customerName || order.customerLabel || '').toLowerCase();
+          const phone = String(order.customerPhone || '');
+          const phoneDigits = normalizePhoneDigits(phone);
+          const matchName = name.includes(customerQ);
+          const matchPhone = customerDigits
+            ? phoneDigits.includes(customerDigits)
+            : phone.toLowerCase().includes(customerQ);
+          if (!matchName && !matchPhone) return false;
+        }
+        if (productCodeQ) {
+          const ok = (order.productCodes || []).some((code) =>
+            String(code).toLowerCase().includes(productCodeQ)
+          );
+          if (!ok) return false;
+        }
+        if (productNameQ) {
+          const ok = (order.productNames || []).some((name) =>
+            String(name).toLowerCase().includes(productNameQ)
+          );
+          if (!ok) return false;
+        }
+        return true;
+      })
+      .sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0));
+  }, [
+    returnOrders,
+    returnFilterOrderCode,
+    returnFilterShippingCode,
+    returnFilterCustomer,
+    returnFilterProductCode,
+    returnFilterProductName,
+    returnFromDate,
+    returnToDate,
+  ]);
 
   const filteredReturnRecords = useMemo(() => {
-    const term = returnSearchTerm.trim().toLowerCase();
-    const fromDateValue = returnFromDate ? new Date(returnFromDate).setHours(0, 0, 0, 0) : null;
-    const toDateValue = returnToDate ? new Date(returnToDate).setHours(23, 59, 59, 999) : null;
+    const orderCodeQ = returnFilterOrderCode.trim().toLowerCase();
+    const customerQ = returnFilterCustomer.trim().toLowerCase();
+    const customerDigits = normalizePhoneDigits(returnFilterCustomer);
+    const fromDateValue = parseLocalDateStart(returnFromDate);
+    const toDateValue = parseLocalDateEnd(returnToDate);
 
-    return returnRecords.filter((record) => {
-      if (fromDateValue || toDateValue) {
-        const createdAtValue = record.createdAt ? new Date(record.createdAt).getTime() : 0;
-        if (fromDateValue && createdAtValue < fromDateValue) return false;
-        if (toDateValue && createdAtValue > toDateValue) return false;
-      }
+    return returnRecords
+      .filter((record) => {
+        if (fromDateValue || toDateValue) {
+          const createdAtValue = record.createdAt ? new Date(record.createdAt).getTime() : 0;
+          if (fromDateValue && createdAtValue < fromDateValue) return false;
+          if (toDateValue && createdAtValue > toDateValue) return false;
+        }
 
-      if (!term) return true;
-
-      const returnCode = (record.returnCode || '').toLowerCase();
-      const orderCode = (record.orderCode || '').toLowerCase();
-      const exchangeCode = (record.exchangeOrderCode || '').toLowerCase();
-      const customerLabel = (record.customerLabel || '').toLowerCase();
-      return (
-        returnCode.includes(term) ||
-        orderCode.includes(term) ||
-        exchangeCode.includes(term) ||
-        customerLabel.includes(term)
-      );
-    });
-  }, [returnRecords, returnSearchTerm, returnFromDate, returnToDate]);
+        if (orderCodeQ) {
+          const returnCode = String(record.returnCode || '').toLowerCase();
+          const orderCode = String(record.orderCode || '').toLowerCase();
+          const exchangeCode = String(record.exchangeOrderCode || '').toLowerCase();
+          if (
+            !returnCode.includes(orderCodeQ) &&
+            !orderCode.includes(orderCodeQ) &&
+            !exchangeCode.includes(orderCodeQ)
+          ) {
+            return false;
+          }
+        }
+        if (customerQ) {
+          const name = String(record.customerName || record.customerLabel || '').toLowerCase();
+          const phone = String(record.customerPhone || '');
+          const phoneDigits = normalizePhoneDigits(phone);
+          const matchName = name.includes(customerQ);
+          const matchPhone = customerDigits
+            ? phoneDigits.includes(customerDigits)
+            : phone.toLowerCase().includes(customerQ);
+          if (!matchName && !matchPhone) return false;
+        }
+        return true;
+      })
+      .sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0));
+  }, [
+    returnRecords,
+    returnFilterOrderCode,
+    returnFilterCustomer,
+    returnFromDate,
+    returnToDate,
+  ]);
 
   const returnPageSize = 10;
   const returnTotalPages = Math.max(1, Math.ceil(filteredReturnOrders.length / returnPageSize));
@@ -1127,7 +1488,15 @@ export default function PosPage() {
   useEffect(() => {
     setReturnPage(1);
     setReturnRecordsPage(1);
-  }, [returnSearchField, returnSearchTerm, returnFromDate, returnToDate]);
+  }, [
+    returnFilterOrderCode,
+    returnFilterShippingCode,
+    returnFilterCustomer,
+    returnFilterProductCode,
+    returnFilterProductName,
+    returnFromDate,
+    returnToDate,
+  ]);
 
   const handleSelectReturnOrder = async (order) => {
     if (!order) return;
@@ -1138,21 +1507,9 @@ export default function PosPage() {
         db.products.toArray()
       ]);
       const productById = new Map(products.map(product => [product.localId, product]));
-      const mappedReturnItems = orderItems.map(item => {
-        const product = productById.get(item.productLocalId);
-        return {
-          product: {
-            localId: item.productLocalId,
-            productCode: item.productCode || product?.productCode || '',
-            name: item.productName,
-            price: item.price,
-            barcode: product?.barcode || '',
-            stock: product?.stock ?? 0
-          },
-          qty: 0,
-          maxQty: item.qty
-        };
-      });
+      const mappedReturnItems = orderItems.map((item) =>
+        mapOrderItemToReturnLine(item, productById.get(item.productLocalId))
+      );
 
       updateCurrentInvoice({
         returnMode: true,
@@ -1233,7 +1590,20 @@ export default function PosPage() {
         // eslint-disable-next-line no-await-in-loop
         const returnCode = await generateReturnCode();
         const now = Date.now();
-        const totalReturnAmount = orderItems.reduce((sum, item) => sum + (Number(item.subtotal) || 0), 0);
+        const returnItemRecords = orderItems.map((item) => {
+          const qty = Number(item.qty) || 0;
+          const soldUnit = resolveSoldUnitPrice(item);
+          const subtotal = Number(item.subtotal) || soldUnit * qty;
+          return {
+            returnLocalId,
+            productLocalId: item.productLocalId,
+            productName: item.productName,
+            price: soldUnit,
+            qty,
+            subtotal,
+          };
+        });
+        const totalReturnAmount = returnItemRecords.reduce((sum, item) => sum + (Number(item.subtotal) || 0), 0);
         const pointsToDeduct = Math.max(0, Number(order.pointsEarned) || 0);
 
         const returnRecord = {
@@ -1259,15 +1629,6 @@ export default function PosPage() {
           pointsAddedExchange: 0,
           pointsDeductedReturn: pointsToDeduct,
         };
-
-        const returnItemRecords = orderItems.map((item) => ({
-          returnLocalId,
-          productLocalId: item.productLocalId,
-          productName: item.productName,
-          price: Number(item.price) || 0,
-          qty: Number(item.qty) || 0,
-          subtotal: Number(item.subtotal) || 0,
-        }));
 
         // eslint-disable-next-line no-await-in-loop
         await db.transaction('rw', db.returns, db.return_items, db.products, db.orders, db.order_items, db.customers, async () => {
@@ -1370,27 +1731,45 @@ export default function PosPage() {
       const now = Date.now();
       const hasExchangeItems = cartItems.length > 0;
 
-      // Khi có đổi hàng: cập nhật đơn gốc (HD6), không tạo đơn mới (HD7)
+      // Khi có đổi hàng: cập nhật đơn gốc, không tạo đơn mới
       const remainingItems = returnItems
-        .map(item => ({
+        .map((item) => ({
           product: item.product,
           qty: Math.max(0, (typeof item.maxQty === 'number' ? item.maxQty : 0) - (Number(item.qty) || 0)),
+          basePrice: item.basePrice,
+          discount: item.discount,
+          discountType: item.discountType,
         }))
-        .filter(x => x.qty > 0);
-      // Gộp theo productLocalId để tránh cùng mã hàng hiện 2 dòng (còn lại + hàng đổi)
+        .filter((x) => x.qty > 0);
+
+      // Gộp theo productLocalId; giữ đúng giá bán / giảm giá của từng dòng
       const byProduct = new Map();
       for (const it of [...remainingItems, ...cartItems]) {
-        const key = it.product?.localId ?? '';
+        const line = normalizeCartLine(it);
+        const key = line.product?.localId ?? '';
         const existing = byProduct.get(key);
-        const qty = Number(it.qty) || 0;
         if (existing) {
-          existing.qty += qty;
+          // Cùng mã: cộng SL, giữ pricing của dòng đã có nếu cùng đơn giá; nếu khác thì ưu tiên dòng mới hơn (hàng đổi)
+          if (Number(existing.unitPrice) === Number(line.unitPrice)
+            && Number(existing.discount) === Number(line.discount)
+            && existing.discountType === line.discountType) {
+            existing.qty += line.qty;
+            existing.subtotal = existing.unitPrice * existing.qty;
+          } else {
+            // Khác giá: cộng SL theo giá dòng sau (hàng đổi / dòng mới)
+            const nextQty = existing.qty + line.qty;
+            byProduct.set(key, {
+              ...line,
+              qty: nextQty,
+              subtotal: line.unitPrice * nextQty,
+            });
+          }
         } else {
-          byProduct.set(key, { product: it.product, qty });
+          byProduct.set(key, { ...line });
         }
       }
-      const mergedItems = Array.from(byProduct.values()).filter(x => x.qty > 0);
-      const mergedSubtotal = mergedItems.reduce((sum, it) => sum + (Number(it.product?.price) || 0) * (Number(it.qty) || 0), 0);
+      const mergedLines = Array.from(byProduct.values()).filter((x) => x.qty > 0);
+      const mergedSubtotal = mergedLines.reduce((sum, it) => sum + (Number(it.subtotal) || 0), 0);
       const mergedOrderDiscount = Number(orderDiscount) || 0;
       const mergedTotal = Math.max(0, mergedSubtotal - (mergedOrderDiscount || 0));
 
@@ -1401,6 +1780,9 @@ export default function PosPage() {
       const pointsDelta = netAmount >= 0 ? netPoints : -netPoints;
       const pointsAddedExchange = pointsDelta > 0 ? pointsDelta : 0;
       const pointsDeductedReturn = pointsDelta < 0 ? Math.abs(pointsDelta) : 0;
+
+      const pricedExchangeLines = cartItems.map((item) => normalizeCartLine(item));
+      const pricedReturnLines = itemsToReturn.map((item) => normalizeCartLine(item));
 
       const returnRecord = {
         localId: returnLocalId,
@@ -1415,31 +1797,41 @@ export default function PosPage() {
         customerLocalId: customerLocalId || returnOrder.customerLocalId || null,
         customerPhone: customerPhone || returnOrder.customerPhone || null,
         totalReturnAmount: returnTotalAmount,
-        totalExchangeAmount: hasExchangeItems ? totalAmount : 0,
+        totalExchangeAmount: hasExchangeItems
+          ? pricedExchangeLines.reduce((s, it) => s + (Number(it.subtotal) || 0), 0)
+          : 0,
         netAmount,
         paymentMethod,
         amountPaid,
         createdAt: now,
         synced: false,
-        exchangeItems: cartItems.map(item => ({
-          productLocalId: item.product.localId,
-          productName: item.product.name,
-          price: item.product.price,
-          qty: item.qty,
-          subtotal: item.product.price * item.qty,
+        exchangeItems: pricedExchangeLines.map((line) => ({
+          productLocalId: line.product?.localId,
+          productCode: line.product?.productCode || '',
+          productName: line.product?.name || '',
+          basePrice: line.basePrice,
+          discount: line.discount,
+          discountType: line.discountType,
+          price: line.unitPrice,
+          qty: line.qty,
+          subtotal: line.subtotal,
         })),
         pointsDelta,
         pointsAddedExchange,
         pointsDeductedReturn,
       };
 
-      const returnItemRecords = itemsToReturn.map(item => ({
+      const returnItemRecords = pricedReturnLines.map((line) => ({
         returnLocalId,
-        productLocalId: item.product.localId,
-        productName: item.product.name,
-        price: item.product.price,
-        qty: item.qty,
-        subtotal: item.product.price * item.qty,
+        productLocalId: line.product?.localId,
+        productName: line.product?.name || '',
+        productCode: line.product?.productCode || '',
+        basePrice: line.basePrice,
+        discount: line.discount,
+        discountType: line.discountType,
+        price: line.unitPrice,
+        qty: line.qty,
+        subtotal: line.subtotal,
       }));
 
       await db.transaction('rw', db.returns, db.return_items, db.products, db.orders, db.order_items, db.customers, async () => {
@@ -1449,25 +1841,20 @@ export default function PosPage() {
         }
 
         // Tính items còn lại sau khi trả (dùng cho cả đổi hàng & trả một phần)
-        const remainingItemsForOrder = returnItems
-          .map(item => ({
+        const remainingLinesForOrder = returnItems
+          .map((item) => normalizeCartLine({
             product: item.product,
             qty: Math.max(0, (typeof item.maxQty === 'number' ? item.maxQty : 0) - (Number(item.qty) || 0)),
+            basePrice: item.basePrice,
+            discount: item.discount,
+            discountType: item.discountType,
           }))
-          .filter(x => x.qty > 0);
+          .filter((x) => x.qty > 0);
 
         if (hasExchangeItems) {
           // Cập nhật đơn gốc: thay items bằng (hàng còn lại sau trả + hàng đổi)
           await db.order_items.where('orderLocalId').equals(returnOrder.localId).delete();
-          const newOrderItems = mergedItems.map(it => ({
-            orderLocalId: returnOrder.localId,
-            productLocalId: it.product.localId,
-            productCode: it.product.productCode || '',
-            productName: it.product.name,
-            price: Number(it.product.price) || 0,
-            qty: Number(it.qty) || 0,
-            subtotal: (Number(it.product.price) || 0) * (Number(it.qty) || 0),
-          }));
+          const newOrderItems = mergedLines.map((line) => toOrderItemDoc(returnOrder.localId, line));
           if (newOrderItems.length > 0) {
             await db.order_items.bulkAdd(newOrderItems);
           }
@@ -1483,7 +1870,7 @@ export default function PosPage() {
           });
         } else {
           // Trả hàng KHÔNG đổi: nếu trả hết -> returned; nếu trả 1 phần -> cập nhật lại HD gốc (giữ completed)
-          const returnedAll = remainingItemsForOrder.length === 0;
+          const returnedAll = remainingLinesForOrder.length === 0;
           if (returnedAll) {
             await db.order_items.where('orderLocalId').equals(returnOrder.localId).delete();
             await db.orders.update(returnOrder.localId, {
@@ -1495,22 +1882,16 @@ export default function PosPage() {
             });
           } else {
             await db.order_items.where('orderLocalId').equals(returnOrder.localId).delete();
-            const remainOrderItems = remainingItemsForOrder.map(it => ({
-              orderLocalId: returnOrder.localId,
-              productLocalId: it.product.localId,
-              productCode: it.product.productCode || '',
-              productName: it.product.name,
-              price: Number(it.product.price) || 0,
-              qty: Number(it.qty) || 0,
-              subtotal: (Number(it.product.price) || 0) * (Number(it.qty) || 0),
-            }));
+            const remainOrderItems = remainingLinesForOrder.map((line) =>
+              toOrderItemDoc(returnOrder.localId, line)
+            );
             if (remainOrderItems.length > 0) {
               await db.order_items.bulkAdd(remainOrderItems);
             }
             const remainSubtotal = remainOrderItems.reduce((s, it) => s + (Number(it.subtotal) || 0), 0);
             await db.orders.update(returnOrder.localId, {
               subtotalAmount: remainSubtotal,
-              totalAmount: remainSubtotal, // giữ đơn giản: trả 1 phần không áp lại discount cũ
+              totalAmount: remainSubtotal,
               discount: 0,
               pointPaymentEnabled: false,
               pointPaymentPoints: 0,
@@ -1568,6 +1949,8 @@ export default function PosPage() {
           await apiRequest(`/api/orders/${returnOrder.orderCode}/replace`, {
             method: 'POST',
             body: JSON.stringify({
+              localId: returnOrder.localId,
+              orderCode: returnOrder.orderCode || '',
               subtotalAmount: mergedSubtotal,
               totalAmount: mergedTotal,
               discount: mergedOrderDiscount,
@@ -1576,16 +1959,16 @@ export default function PosPage() {
               customerLocalId: customerLocalId || returnOrder.customerLocalId || null,
               customerPhone: customerPhone || returnOrder.customerPhone || null,
               note: orderNote || '',
-              items: mergedItems.map(it => ({
-                productLocalId: it.product.localId,
-                productName: it.product.name,
-                basePrice: Number(it.product.price) || 0,
-                discount: 0,
-                pointPaymentPoints: 0,
-                discountType: 'vnd',
-                price: Number(it.product.price) || 0,
-                qty: Number(it.qty) || 0,
-                subtotal: (Number(it.product.price) || 0) * (Number(it.qty) || 0),
+              items: mergedLines.map((line) => ({
+                productLocalId: line.product?.localId,
+                productCode: line.product?.productCode || '',
+                productName: line.product?.name || '',
+                basePrice: Number(line.basePrice) || 0,
+                discount: Number(line.discount) || 0,
+                discountType: line.discountType || 'vnd',
+                price: Number(line.unitPrice) || 0,
+                qty: Number(line.qty) || 0,
+                subtotal: Number(line.subtotal) || 0,
               })),
             }),
           });
@@ -1697,7 +2080,7 @@ export default function PosPage() {
     }
   };
 
-  // Mở dialog chi tiết hóa đơn bán hàng (từ lịch sử bán/trả trong pos-app)
+  // Mở dialog chi tiết hóa đơn bán hàng (từ lịch sử bán/trả hoặc popup chọn HĐ trả)
   const handleOpenOrderHistoryDetail = async (order) => {
     if (!order) return;
     const orderIdOrCode = order?.orderCode || order?.localId || '';
@@ -1710,9 +2093,27 @@ export default function PosPage() {
       const ord = res?.order;
       if (!ord) return;
 
-      const invoiceLineItems = Array.isArray(res?.invoiceLineItems)
+      const rawLineItems = Array.isArray(res?.invoiceLineItems)
         ? res.invoiceLineItems
         : (Array.isArray(res?.items) ? res.items : []);
+
+      const dbCurrentItems = rawLineItems.map((it) => normalizeHistoryLine(it));
+
+      await db.open();
+      let customer = null;
+      if (ord.customerLocalId) {
+        customer = await db.customers.get(ord.customerLocalId);
+      }
+      if (!customer && ord.customerPhone) {
+        customer = await db.customers.where('phone').equals(String(ord.customerPhone).trim()).first();
+      }
+
+      const dob = customer?.dateOfBirth || customer?.birthday || customer?.dob || '';
+      const customerName =
+        ord.customerName ||
+        ord.customerLabel ||
+        formatCustomerLabel(customer) ||
+        '';
 
       const returnIds = Array.isArray(ord?.returnIds) ? ord.returnIds : [];
       const returnDetailResults = returnIds.length
@@ -1726,17 +2127,130 @@ export default function PosPage() {
           const v = r.value;
           return {
             ...(v?.return || {}),
-            returnItems: Array.isArray(v?.returnItems) ? v.returnItems : [],
-            exchangeItems: Array.isArray(v?.exchangeItems) ? v.exchangeItems : [],
+            returnItems: (Array.isArray(v?.returnItems) ? v.returnItems : []).map(normalizeHistoryLine),
+            exchangeItems: (Array.isArray(v?.exchangeItems) ? v.exchangeItems : []).map(normalizeHistoryLine),
           };
-        });
+        })
+        .sort((a, b) => (Number(a.createdAt) || 0) - (Number(b.createdAt) || 0));
+
+      const hasReturns = returnDetails.length > 0;
+      const lastReturn = hasReturns ? returnDetails[returnDetails.length - 1] : null;
+      const lastExchangeItems = lastReturn?.exchangeItems || [];
+
+      // Đơn gốc: snapshot → hoặc dựng ngược từ lịch sử (ưu tiên điểm neo = hàng đổi lần cuối, không tin DB lệch)
+      let originalItems = Array.isArray(ord.originalItems) && ord.originalItems.length > 0
+        ? ord.originalItems.map(normalizeHistoryLine)
+        : [];
+      if (!originalItems.length && hasReturns) {
+        const anchor =
+          lastExchangeItems.length > 0 ? lastExchangeItems : dbCurrentItems;
+        originalItems = reconstructOriginalItems(anchor, returnDetails);
+      }
+      if (!originalItems.length) {
+        originalItems = dbCurrentItems;
+      }
+
+      const originalGoodsSubtotal = originalItems.reduce((sum, it) => sum + (Number(it.subtotal) || 0), 0);
+      const originalTotalAmount =
+        Number(ord.originalTotalAmount) > 0
+          ? Number(ord.originalTotalAmount)
+          : originalGoodsSubtotal;
+
+      // Đơn hiện tại: khi có đổi trả, luôn replay lịch sử (tránh đọc nhầm order_items cũ do bug replace)
+      let currentItems = hasReturns
+        ? reconstructCurrentItems(originalItems, returnDetails)
+        : dbCurrentItems;
+      if (!currentItems.length && dbCurrentItems.length && !hasReturns) {
+        currentItems = dbCurrentItems;
+      }
+      // Nếu replay ra rỗng nhưng lần trả cuối có mua lại → lấy hàng đổi lần cuối
+      if (hasReturns && !currentItems.length && lastExchangeItems.length > 0) {
+        currentItems = lastExchangeItems.map(normalizeHistoryLine);
+      }
+
+      const currentGoodsSubtotal = currentItems.reduce((sum, it) => sum + (Number(it.subtotal) || 0), 0);
+      const currentTotalAmount = currentItems.length > 0
+        ? currentGoodsSubtotal
+        : (Number(ord.totalAmount) || 0);
+
+      const showRepurchaseSection = hasReturns || (
+        Number(originalTotalAmount) > 0
+        && Number(currentTotalAmount) !== Number(originalTotalAmount)
+      );
 
       setOrderHistoryDetail({
         ...ord,
-        invoiceLineItems,
-        invoiceGoodsSubtotal: res?.invoiceGoodsSubtotal ?? null,
+        customerName: customerName || 'Khách lẻ',
+        customerPhone: ord.customerPhone || customer?.phone || '',
+        customerEmail: customer?.email || '',
+        customerAddress: customer?.address || '',
+        customerDateOfBirth: dob,
+        customerAge: calcAgeFromDob(dob),
+        customerCode: customer?.customerCode || ord.customerCode || '',
+        customerLocalId: ord.customerLocalId || customer?.localId || '',
+        invoiceLineItems: originalItems,
+        invoiceGoodsSubtotal: originalGoodsSubtotal,
+        originalItems,
+        originalGoodsSubtotal,
+        originalTotalAmount,
+        currentItems,
+        currentGoodsSubtotal,
+        currentTotalAmount,
+        showRepurchaseSection,
         returnDetails,
       });
+
+      // Sửa lại order_items trong DB nếu đang lệch so với trạng thái đúng sau đổi trả
+      const realOrderId = ord.localId;
+      if (realOrderId && hasReturns && currentItems.length > 0) {
+        const dbSig = dbCurrentItems.map((x) => `${x.productLocalId}:${x.qty}:${x.price}`).sort().join('|');
+        const curSig = currentItems.map((x) => `${x.productLocalId}:${x.qty}:${x.price}`).sort().join('|');
+        if (dbSig !== curSig) {
+          (async () => {
+            try {
+              await db.order_items.where('orderLocalId').equals(realOrderId).delete();
+              await db.order_items.bulkAdd(
+                currentItems.map((it) => ({
+                  orderLocalId: realOrderId,
+                  productLocalId: it.productLocalId,
+                  productCode: it.productCode || '',
+                  productName: it.productName || '',
+                  basePrice: Number(it.basePrice) || Number(it.price) || 0,
+                  discount: Number(it.discount) || 0,
+                  discountType: it.discountType || 'vnd',
+                  price: Number(it.price) || 0,
+                  qty: Number(it.qty) || 0,
+                  subtotal: Number(it.subtotal) || 0,
+                }))
+              );
+              await db.orders.update(realOrderId, {
+                subtotalAmount: currentGoodsSubtotal,
+                totalAmount: currentTotalAmount,
+                updatedAt: Date.now(),
+                synced: false,
+                ...(Array.isArray(ord.originalItems) && ord.originalItems.length
+                  ? {}
+                  : {
+                      originalItems: originalItems.map(({ orderLocalId: _x, ...rest }) => rest),
+                      originalTotalAmount,
+                      originalSubtotalAmount: originalGoodsSubtotal,
+                    }),
+              });
+            } catch (repairErr) {
+              console.warn('Repair order items after exchange history failed:', repairErr);
+            }
+          })();
+        } else if (
+          (!Array.isArray(ord.originalItems) || ord.originalItems.length === 0)
+          && originalItems.length > 0
+        ) {
+          db.orders.update(realOrderId, {
+            originalItems: originalItems.map(({ orderLocalId: _x, ...rest }) => rest),
+            originalTotalAmount,
+            originalSubtotalAmount: originalGoodsSubtotal,
+          }).catch(() => {});
+        }
+      }
     } catch (e) {
       console.error(e);
       showSnackbar('Không tải được chi tiết hóa đơn', 'error');
@@ -1864,20 +2378,32 @@ export default function PosPage() {
     updateCurrentInvoice({ [cartItemsKey]: updatedItems });
   };
 
-  // Cập nhật discount cho sản phẩm
-  const handleUpdateDiscount = (productLocalId, discount, discountType) => {
-    const updatedItems = cartItems.map(item => {
-      if (item.product.localId === productLocalId) {
-        return { 
-          ...item, 
-          discount: discount || 0,
-          discountType: discountType || 'vnd'
-        };
-      }
-      return item;
+  // Cập nhật đơn giá + giảm giá + giá bán cho dòng hàng (flow giống KiotViet)
+  const handleUpdateItemPricing = (productLocalId, { price, discount, discountType }) => {
+    const nextPrice = Math.max(0, Math.round(Number(price) || 0));
+    const nextDiscount = Math.max(0, Number(discount) || 0);
+    const nextType = discountType === 'percent' ? 'percent' : 'vnd';
+    const updatedItems = cartItems.map((item) => {
+      if (item.product.localId !== productLocalId) return item;
+      return {
+        ...item,
+        product: { ...item.product, price: nextPrice },
+        discount: nextDiscount,
+        discountType: nextType,
+      };
     });
     const cartItemsKey = isReturnMode ? 'exchangeItems' : 'items';
     updateCurrentInvoice({ [cartItemsKey]: updatedItems });
+  };
+
+  // Legacy: chỉ cập nhật discount
+  const handleUpdateDiscount = (productLocalId, discount, discountType) => {
+    const item = cartItems.find((i) => i.product.localId === productLocalId);
+    handleUpdateItemPricing(productLocalId, {
+      price: Number(item?.product?.price) || 0,
+      discount,
+      discountType,
+    });
   };
 
   // Xóa sản phẩm khỏi hóa đơn hiện tại
@@ -1936,8 +2462,8 @@ export default function PosPage() {
   const payableAfterPoints = Math.max(0, totalAmount - pointPaymentAmount);
 
   const returnTotalAmount = returnItems.reduce((sum, item) => {
-    const price = Number(item.product?.price) || 0;
-    return sum + price * (Number(item.qty) || 0);
+    const line = normalizeCartLine({ ...item, qty: Number(item.qty) || 0 });
+    return sum + (Number(line.subtotal) || 0);
   }, 0);
   const returnTotalQty = returnItems.reduce((sum, item) => sum + (Number(item.qty) || 0), 0);
   const exchangeTotalQty = cartItems.reduce((sum, item) => sum + (Number(item.qty) || 0), 0);
@@ -2168,7 +2694,7 @@ export default function PosPage() {
   const speakTransferSuccess = useCallback((amount) => {
     try {
       if (typeof window === 'undefined' || !window.speechSynthesis) return;
-      const moneyText = Number(amount || 0).toLocaleString('vi-VN');
+      const moneyText = Number(amount || 0).toLocaleString('en-US');
       const utter = new SpeechSynthesisUtterance(
         `Đã nhận chuyển khoản thành công số tiền ${moneyText} đồng`,
       );
@@ -2287,17 +2813,20 @@ export default function PosPage() {
             customerLocalId: customerLocalId || null,
             customerPhone: customerPhone || null,
             note: orderNote || '',
-            items: cartItems.map((item) => ({
-              productLocalId: item.product.localId,
-              productCode: item.product.productCode || '',
-              productName: item.product.name,
-              basePrice: Number(item.product.price) || 0,
-              discount: Number(item.discount) || 0,
-              discountType: item.discountType || 'vnd',
-              price: Number(calculateItemFinalPrice(item)) || 0,
-              qty: item.qty,
-              subtotal: (Number(calculateItemFinalPrice(item)) || 0) * (Number(item.qty) || 0),
-            })),
+            items: cartItems.map((item) => {
+              const line = normalizeCartLine(item);
+              return {
+                productLocalId: line.product.localId,
+                productCode: line.product.productCode || '',
+                productName: line.product.name,
+                basePrice: line.basePrice,
+                discount: line.discount,
+                discountType: line.discountType,
+                price: line.unitPrice,
+                qty: line.qty,
+                subtotal: line.subtotal,
+              };
+            }),
           }),
         });
 
@@ -2381,6 +2910,8 @@ export default function PosPage() {
         cashierName: effectiveCashierName,
                   customerLocalId: effectiveCustomerLocalId,
                   customerPhone: customerPhone || null,
+                  customerName: customerName || '',
+                  customerLabel: customerName || '',
         pointsUsed: normalizedPointPaymentPoints,
         pointsRedeemAmount: pointPaymentAmount,
         pointsEarned: 0,
@@ -2390,16 +2921,15 @@ export default function PosPage() {
         note: orderNote,
       };
 
-      // Tạo chi tiết đơn hàng
-      const orderItems = cartItems.map(item => ({
-        orderLocalId: orderLocalId,
-        productLocalId: item.product.localId,
-        productCode: item.product.productCode || '',
-        productName: item.product.name,
-        price: item.product.price,
-        qty: item.qty,
-        subtotal: item.product.price * item.qty,
-      }));
+      // Tạo chi tiết đơn hàng — lưu cả giá gốc, giảm giá item và giá bán thực tế
+      const orderItems = cartItems.map((item) =>
+        toOrderItemDoc(orderLocalId, normalizeCartLine(item))
+      );
+
+      // Snapshot đơn gốc — không bị ghi đè khi đổi trả sau này
+      order.originalItems = orderItems.map(({ orderLocalId: _oid, ...rest }) => rest);
+      order.originalTotalAmount = payableAfterPoints;
+      order.originalSubtotalAmount = subtotalAmount;
 
       // Cập nhật tồn kho cho từng sản phẩm đã bán
       // for...of: Loop qua từng item trong giỏ hàng
@@ -2873,6 +3403,7 @@ export default function PosPage() {
                       items={cartItems}
                       onUpdateQty={handleUpdateQty}
                       onUpdateDiscount={handleUpdateDiscount}
+                      onUpdatePricing={handleUpdateItemPricing}
                       onRemove={handleRemoveFromCart}
                     />
                   </Box>
@@ -2884,6 +3415,7 @@ export default function PosPage() {
               items={cartItems}
               onUpdateQty={handleUpdateQty}
               onUpdateDiscount={handleUpdateDiscount}
+              onUpdatePricing={handleUpdateItemPricing}
               onRemove={handleRemoveFromCart}
             />
           )}
@@ -2925,19 +3457,33 @@ export default function PosPage() {
                     )}
                   </Box>
                   <Typography variant="body2" sx={{ color: 'success.main', fontWeight: 600 }}>
-                    Trả hàng {returnOrder?.orderCode ? `/ ${returnOrder.orderCode}` : ''} - {cashierName}
+                    Trả hàng{' '}
+                    {returnOrder?.orderCode ? (
+                      <>
+                        /{' '}
+                        <Link
+                          component="button"
+                          underline="hover"
+                          onClick={() => handleOpenOrderHistoryDetail(returnOrder)}
+                          sx={{ color: 'success.main', fontWeight: 700, verticalAlign: 'baseline' }}
+                        >
+                          {returnOrder.orderCode}
+                        </Link>
+                      </>
+                    ) : null}{' '}
+                    - {cashierName}
                   </Typography>
                   <Box sx={{ mt: 1.5, display: 'flex', flexDirection: 'column', gap: 1 }}>
                     <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
                       <Typography variant="body2">Tổng tiền hàng trả</Typography>
                       <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                        {returnTotalQty} / {returnTotalAmount.toLocaleString('vi-VN')}
+                        {returnTotalQty} / {returnTotalAmount.toLocaleString('en-US')}
                       </Typography>
                     </Box>
                     <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
                       <Typography variant="body2">Tổng tiền hàng mua</Typography>
                       <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                        {exchangeTotalQty} / {totalAmount.toLocaleString('vi-VN')}
+                        {exchangeTotalQty} / {totalAmount.toLocaleString('en-US')}
                       </Typography>
                     </Box>
                     <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
@@ -2948,7 +3494,7 @@ export default function PosPage() {
                         variant="body2"
                         sx={{ fontWeight: 700, color: netAmount >= 0 ? 'primary.main' : 'error.main' }}
                       >
-                        {Math.abs(netAmount).toLocaleString('vi-VN')}
+                        {Math.abs(netAmount).toLocaleString('en-US')}
                       </Typography>
                     </Box>
                   </Box>
@@ -2963,12 +3509,11 @@ export default function PosPage() {
                     <TextField
                       fullWidth
                       size="small"
-                      type="number"
-                      value={amountPaid || returnNeedToPay}
+                      value={formatMoneyInput(amountPaid || returnNeedToPay)}
                       onFocus={(e) => e.target.select()}
                       onChange={(e) => {
-                        const value = parseInt(e.target.value) || 0;
-                        updateCurrentInvoice({ amountPaid: value });
+                        const { number } = normalizeMoneyTyping(e.target.value);
+                        updateCurrentInvoice({ amountPaid: number });
                       }}
                     />
                   </Box>
@@ -2977,7 +3522,7 @@ export default function PosPage() {
                       {returnQuickAmounts.map((amount) => (
                         <Grid item xs={4} key={amount}>
                           <Chip
-                            label={amount.toLocaleString('vi-VN')}
+                            label={amount.toLocaleString('en-US')}
                             onClick={() => updateCurrentInvoice({ amountPaid: amount })}
                             color={amountPaid === amount ? 'primary' : 'default'}
                             sx={{ width: '100%', fontSize: '0.75rem' }}
@@ -3861,7 +4406,7 @@ export default function PosPage() {
                             Số lần mua: {safeOrderHistory.length}
                           </Typography>
                           <Typography variant="body2" color="text.secondary">
-                            Tổng bán trừ trả hàng: {totalSales.toLocaleString('vi-VN')}
+                            Tổng bán trừ trả hàng: {totalSales.toLocaleString('en-US')}
                           </Typography>
                         </Box>
 
@@ -3910,7 +4455,7 @@ export default function PosPage() {
                               <TableCell>{createdAtLabel}</TableCell>
                               <TableCell>{cashierName}</TableCell>
                               <TableCell align="right">
-                                {(Number(order?.totalAmount) || 0).toLocaleString('vi-VN')}
+                                {(Number(order?.totalAmount) || 0).toLocaleString('en-US')}
                               </TableCell>
                               <TableCell>{order?.status === 'completed' ? 'Hoàn thành' : (order?.status || '')}</TableCell>
                             </TableRow>
@@ -4416,16 +4961,16 @@ export default function PosPage() {
                       variant="outlined"
                     />
                     <Chip
-                      label={`Giá vốn: ${reportData.totalCost.toLocaleString('vi-VN')}`}
+                      label={`Giá vốn: ${reportData.totalCost.toLocaleString('en-US')}`}
                       color="default"
                     />
                    
                     <Chip
-                      label={`Lợi nhuận: ${reportData.totalProfit.toLocaleString('vi-VN')}`}
+                      label={`Lợi nhuận: ${reportData.totalProfit.toLocaleString('en-US')}`}
                       color={reportData.totalProfit >= 0 ? 'success' : 'error'}
                     />
                      <Chip
-                      label={`Doanh thu: ${reportData.totalSales.toLocaleString('vi-VN')}`}
+                      label={`Doanh thu: ${reportData.totalSales.toLocaleString('en-US')}`}
                       color="primary"
                     />
                   </Box>
@@ -4450,7 +4995,7 @@ export default function PosPage() {
                             <Box key={bucket.label} sx={{ minWidth: 28 }}>
                             <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'flex-end', height: 220 }}>
                               <Tooltip
-                                title={`${bucket.label} · Giá vốn: ${bucket.totalCost.toLocaleString('vi-VN')} · Lợi nhuận: ${bucket.totalProfit.toLocaleString('vi-VN')} · Doanh thu: ${bucket.totalSales.toLocaleString('vi-VN')}`}
+                                title={`${bucket.label} · Giá vốn: ${bucket.totalCost.toLocaleString('en-US')} · Lợi nhuận: ${bucket.totalProfit.toLocaleString('en-US')} · Doanh thu: ${bucket.totalSales.toLocaleString('en-US')}`}
                                 arrow
                               >
                                 <Box
@@ -4533,53 +5078,67 @@ export default function PosPage() {
             <Tab label="Hóa đơn đổi trả" value={1} />
           </Tabs>
           <Box sx={{ display: 'flex', gap: 2, minHeight: 420 }}>
-            <Box sx={{ width: 260, display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <Box sx={{ width: 280, display: 'flex', flexDirection: 'column', gap: 2, flexShrink: 0 }}>
               <Paper sx={{ p: 2 }}>
-                <Typography variant="subtitle2" sx={{ mb: 1 }}>
+                <Typography variant="subtitle2" sx={{ mb: 1.5, fontWeight: 700 }}>
                   Tìm kiếm
                 </Typography>
-                <TextField
-                  size="small"
-                  fullWidth
-                  placeholder={
-                    returnSearchOptions.find((option) => option.value === returnSearchField)?.label ||
-                    'Tìm kiếm'
-                  }
-                  value={returnSearchTerm}
-                  onChange={(e) => setReturnSearchTerm(e.target.value)}
-                />
-                <Box sx={{ mt: 1 }}>
-                  {returnSearchOptions.map((option) => (
-                    <Button
-                      key={option.value}
-                      fullWidth
-                      onClick={() => setReturnSearchField(option.value)}
-                      sx={{
-                        justifyContent: 'flex-start',
-                        color: returnSearchField === option.value ? 'primary.main' : 'text.secondary',
-                        fontWeight: returnSearchField === option.value ? 600 : 400,
-                        textTransform: 'none',
-                        px: 0,
-                        py: 0.75,
-                        borderBottom: '1px solid',
-                        borderColor: 'divider',
-                        borderRadius: 0,
-                      }}
-                    >
-                      {option.label}
-                    </Button>
-                  ))}
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.25 }}>
+                  <TextField
+                    size="small"
+                    fullWidth
+                    label="Theo mã hóa đơn"
+                    placeholder="VD: HD12"
+                    value={returnFilterOrderCode}
+                    onChange={(e) => setReturnFilterOrderCode(e.target.value)}
+                  />
+                  <TextField
+                    size="small"
+                    fullWidth
+                    label="Theo mã vận đơn bán"
+                    placeholder="Mã vận đơn"
+                    value={returnFilterShippingCode}
+                    onChange={(e) => setReturnFilterShippingCode(e.target.value)}
+                  />
+                  <TextField
+                    size="small"
+                    fullWidth
+                    label="Theo khách hàng hoặc ĐT"
+                    placeholder="Tên hoặc số điện thoại"
+                    value={returnFilterCustomer}
+                    onChange={(e) => setReturnFilterCustomer(e.target.value)}
+                  />
+                  <TextField
+                    size="small"
+                    fullWidth
+                    label="Theo mã hàng"
+                    placeholder="Mã hàng / barcode"
+                    value={returnFilterProductCode}
+                    onChange={(e) => setReturnFilterProductCode(e.target.value)}
+                  />
+                  <TextField
+                    size="small"
+                    fullWidth
+                    label="Theo tên hàng"
+                    placeholder="Tên sản phẩm"
+                    value={returnFilterProductName}
+                    onChange={(e) => setReturnFilterProductName(e.target.value)}
+                  />
                 </Box>
               </Paper>
 
               <Paper sx={{ p: 2 }}>
-                <Typography variant="subtitle2" sx={{ mb: 1 }}>
+                <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 700 }}>
                   Thời gian
+                </Typography>
+                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
+                  Để trống để xem tất cả, đơn mới nhất trước.
                 </Typography>
                 <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
                   <TextField
                     type="date"
                     size="small"
+                    label="Từ ngày"
                     value={returnFromDate}
                     onChange={(e) => setReturnFromDate(e.target.value)}
                     InputLabelProps={{ shrink: true }}
@@ -4587,6 +5146,7 @@ export default function PosPage() {
                   <TextField
                     type="date"
                     size="small"
+                    label="Đến ngày"
                     value={returnToDate}
                     onChange={(e) => setReturnToDate(e.target.value)}
                     InputLabelProps={{ shrink: true }}
@@ -4672,11 +5232,28 @@ export default function PosPage() {
                                 />
                               </TableCell>
                               <TableCell sx={{ color: 'primary.main', fontWeight: 600 }}>
-                                {order.orderCode || '—'}
+                                <Link
+                                  component="button"
+                                  underline="hover"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleOpenOrderHistoryDetail(order);
+                                  }}
+                                  sx={{ color: 'primary.main', fontWeight: 700, textAlign: 'left', cursor: 'pointer' }}
+                                >
+                                  {order.orderCode || '—'}
+                                </Link>
                               </TableCell>
                               <TableCell>{createdAtLabel}</TableCell>
                               <TableCell>{cashierName}</TableCell>
-                              <TableCell>{order.customerLabel}</TableCell>
+                              <TableCell>
+                                {order.customerLabel}
+                                {order.customerPhone ? (
+                                  <Typography variant="caption" color="text.secondary" display="block">
+                                    {order.customerPhone}
+                                  </Typography>
+                                ) : null}
+                              </TableCell>
                               <TableCell>
                                 {returnRecords.length === 0 ? (
                                   '—'
@@ -4700,7 +5277,7 @@ export default function PosPage() {
                                 )}
                               </TableCell>
                               <TableCell align="right">
-                                {(Number(order.totalAmount) || 0).toLocaleString('vi-VN')}
+                                {(Number(order.totalAmount) || 0).toLocaleString('en-US')}
                               </TableCell>
                               <TableCell align="right">
                                 <Button
@@ -4754,7 +5331,7 @@ export default function PosPage() {
                               <TableCell>{createdAtLabel}</TableCell>
                               <TableCell>{record.customerLabel}</TableCell>
                               <TableCell align="right">
-                                {(Number(record.totalExchangeAmount) || 0).toLocaleString('vi-VN')}
+                                {(Number(record.totalExchangeAmount) || 0).toLocaleString('en-US')}
                               </TableCell>
                             </TableRow>
                           );
@@ -4923,7 +5500,7 @@ export default function PosPage() {
             Thu ngân vui lòng xác nhận lại giao dịch chuyển khoản.
           </Typography>
           <Typography variant="h6" sx={{ fontWeight: 700, color: 'primary.main' }}>
-            {Number(bankVerifyAmount || 0).toLocaleString('vi-VN')} đ
+            {Number(bankVerifyAmount || 0).toLocaleString('en-US')} đ
           </Typography>
           {selectedBankAccount && (
             <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
@@ -4991,48 +5568,106 @@ export default function PosPage() {
 
                 const customerCode = orderHistoryDetail?.customerCode || '';
                 const customerLocalId = orderHistoryDetail?.customerLocalId || '';
+                const isWalkIn =
+                  !orderHistoryDetail?.customerLocalId &&
+                  !orderHistoryDetail?.customerPhone &&
+                  (!orderHistoryDetail?.customerName || orderHistoryDetail.customerName === 'Khách lẻ');
                 return (
-                  <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
-                    <Typography variant="body2">
-                      Mã hóa đơn:{' '}
-                      <strong>{orderHistoryDetail?.orderCode || '—'}</strong>
-                    </Typography>
-                    <Typography variant="body2">
-                      Thời gian bán: <strong>{createdAtLabel || '-'}</strong>
-                    </Typography>
-                    <Typography variant="body2">
-                      Người bán: <strong>{orderHistoryDetail?.cashierName || '-'}</strong>
-                    </Typography>
-                    <Typography variant="body2">
-                      Khách:{' '}
-                      <strong>
-                        {orderHistoryDetail?.customerName || 'Khách lẻ'}
-                      </strong>
-                      {customerCode ? (
-                        <>
-                          {' '}
-                          (
-                          <Link
-                            component="button"
-                            underline="hover"
-                            onClick={() => {
-                              if (customerLocalId) openEditCustomer(customerLocalId);
-                            }}
-                            sx={{ color: 'primary.main', fontWeight: 700 }}
-                          >
-                            {customerCode}
-                          </Link>
-                          )
-                        </>
-                      ) : null}
-                    </Typography>
+                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+                    <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
+                      <Typography variant="body2">
+                        Mã hóa đơn:{' '}
+                        <strong>{orderHistoryDetail?.orderCode || '—'}</strong>
+                      </Typography>
+                      <Typography variant="body2">
+                        Thời gian bán: <strong>{createdAtLabel || '-'}</strong>
+                      </Typography>
+                      <Typography variant="body2">
+                        Người bán: <strong>{orderHistoryDetail?.cashierName || '-'}</strong>
+                      </Typography>
+                      <Typography variant="body2">
+                        Tổng lúc mua:{' '}
+                        <strong>
+                          {(Number(orderHistoryDetail?.originalTotalAmount)
+                            || Number(orderHistoryDetail?.invoiceGoodsSubtotal)
+                            || 0
+                          ).toLocaleString('en-US')} đ
+                        </strong>
+                      </Typography>
+                      <Typography variant="body2">
+                        Tổng hiện tại (sau đổi trả):{' '}
+                        <strong style={{ color: '#1976d2' }}>
+                          {(Number(orderHistoryDetail?.currentTotalAmount)
+                            || Number(orderHistoryDetail?.currentGoodsSubtotal)
+                            || 0
+                          ).toLocaleString('en-US')} đ
+                        </strong>
+                      </Typography>
+                    </Box>
+
+                    <Paper variant="outlined" sx={{ p: 1.5 }}>
+                      <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1 }}>
+                        Thông tin khách hàng
+                      </Typography>
+                      {isWalkIn ? (
+                        <Typography variant="body2" color="text.secondary">
+                          Khách lẻ
+                        </Typography>
+                      ) : (
+                        <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 1 }}>
+                          <Typography variant="body2">
+                            Tên:{' '}
+                            <strong>
+                              {orderHistoryDetail?.customerName || 'Khách lẻ'}
+                            </strong>
+                            {customerCode ? (
+                              <>
+                                {' '}
+                                (
+                                <Link
+                                  component="button"
+                                  underline="hover"
+                                  onClick={() => {
+                                    if (customerLocalId) openEditCustomer(customerLocalId);
+                                  }}
+                                  sx={{ color: 'primary.main', fontWeight: 700 }}
+                                >
+                                  {customerCode}
+                                </Link>
+                                )
+                              </>
+                            ) : null}
+                          </Typography>
+                          <Typography variant="body2">
+                            Điện thoại: <strong>{orderHistoryDetail?.customerPhone || '—'}</strong>
+                          </Typography>
+                          <Typography variant="body2">
+                            Email: <strong>{orderHistoryDetail?.customerEmail || '—'}</strong>
+                          </Typography>
+                          <Typography variant="body2">
+                            Tuổi / ngày sinh:{' '}
+                            <strong>
+                              {orderHistoryDetail?.customerAge
+                                ? `${orderHistoryDetail.customerAge} tuổi`
+                                : '—'}
+                              {orderHistoryDetail?.customerDateOfBirth
+                                ? ` (${orderHistoryDetail.customerDateOfBirth})`
+                                : ''}
+                            </strong>
+                          </Typography>
+                          <Typography variant="body2" sx={{ gridColumn: { sm: '1 / -1' } }}>
+                            Địa chỉ: <strong>{orderHistoryDetail?.customerAddress || '—'}</strong>
+                          </Typography>
+                        </Box>
+                      )}
+                    </Paper>
                   </Box>
                 );
               })()}
 
               <Box>
                 <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 700 }}>
-                  Hàng hóa theo hóa đơn gốc
+                  Đơn hàng đã mua (lúc bán đầu)
                 </Typography>
                 <Table size="small">
                   <TableHead>
@@ -5040,20 +5675,22 @@ export default function PosPage() {
                       <TableCell>Mã hàng</TableCell>
                       <TableCell>Tên hàng</TableCell>
                       <TableCell align="right">SL</TableCell>
-                      <TableCell align="right">Đơn giá</TableCell>
+                      <TableCell align="right">Đơn giá gốc</TableCell>
+                      <TableCell align="right">Giảm giá</TableCell>
+                      <TableCell align="right">Giá bán</TableCell>
                       <TableCell align="right">Thành tiền</TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
-                    {(orderHistoryDetail?.invoiceLineItems || []).length === 0 ? (
+                    {(orderHistoryDetail?.originalItems || orderHistoryDetail?.invoiceLineItems || []).length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={5} align="center">
+                        <TableCell colSpan={7} align="center">
                           Không có dữ liệu
                         </TableCell>
                       </TableRow>
                     ) : (
-                      orderHistoryDetail.invoiceLineItems.map((it, idx) => (
-                        <TableRow key={`${it.productLocalId || it.productCode || idx}`}>
+                      (orderHistoryDetail.originalItems || orderHistoryDetail.invoiceLineItems).map((it, idx) => (
+                        <TableRow key={`orig-${it.productLocalId || it.productCode || idx}`}>
                           <TableCell>
                             <Link
                               component="button"
@@ -5071,21 +5708,51 @@ export default function PosPage() {
                           <TableCell>{it.productName || '—'}</TableCell>
                           <TableCell align="right">{Number(it.qty) || 0}</TableCell>
                           <TableCell align="right">
-                            {(Number(it.price) || 0).toLocaleString('vi-VN')}
+                            {(Number(it.basePrice) || Number(it.price) || 0).toLocaleString('en-US')}
+                          </TableCell>
+                          <TableCell align="right" sx={{ color: (Number(it.discount) || 0) > 0 ? 'error.main' : 'inherit' }}>
+                            {formatItemDiscountLabel(it)}
                           </TableCell>
                           <TableCell align="right">
-                            {(Number(it.subtotal) || 0).toLocaleString('vi-VN')}
+                            {(Number(it.price) || 0).toLocaleString('en-US')}
+                          </TableCell>
+                          <TableCell align="right">
+                            {(Number(it.subtotal) || 0).toLocaleString('en-US')}
                           </TableCell>
                         </TableRow>
                       ))
                     )}
+                    {(orderHistoryDetail?.originalItems || orderHistoryDetail?.invoiceLineItems || []).length > 0 && (
+                      <TableRow>
+                        <TableCell colSpan={6} align="right" sx={{ fontWeight: 700 }}>
+                          Tổng tiền hàng lúc mua
+                        </TableCell>
+                        <TableCell align="right" sx={{ fontWeight: 700 }}>
+                          {(Number(orderHistoryDetail?.originalGoodsSubtotal)
+                            || Number(orderHistoryDetail?.invoiceGoodsSubtotal)
+                            || 0
+                          ).toLocaleString('en-US')}
+                        </TableCell>
+                      </TableRow>
+                    )}
+                    <TableRow>
+                      <TableCell colSpan={6} align="right" sx={{ fontWeight: 700 }}>
+                        Khách đã trả lúc mua
+                      </TableCell>
+                      <TableCell align="right" sx={{ fontWeight: 700, color: 'primary.main' }}>
+                        {(Number(orderHistoryDetail?.originalTotalAmount)
+                          || Number(orderHistoryDetail?.invoiceGoodsSubtotal)
+                          || 0
+                        ).toLocaleString('en-US')}
+                      </TableCell>
+                    </TableRow>
                   </TableBody>
                 </Table>
               </Box>
 
               <Box>
                 <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 700 }}>
-                  Các phiếu trả liên quan
+                  Các phiếu trả / đổi liên quan
                 </Typography>
                 {orderHistoryDetail.returnDetails?.length ? (
                   orderHistoryDetail.returnDetails.map((rd, idx) => {
@@ -5093,6 +5760,14 @@ export default function PosPage() {
                       ? new Date(rd.createdAt).toLocaleString('vi-VN', { hour12: false })
                       : '';
                     const returnCode = displayReturnCode(rd?.returnCode);
+                    const exchangeTotal = (rd.exchangeItems || []).reduce(
+                      (s, it) => s + (Number(it.subtotal) || 0),
+                      0
+                    );
+                    const returnedTotal = (rd.returnItems || []).reduce(
+                      (s, it) => s + (Number(it.subtotal) || 0),
+                      0
+                    );
                     return (
                       <Box
                         key={`${returnCode}-${idx}`}
@@ -5123,7 +5798,15 @@ export default function PosPage() {
                           </Typography>
                           <Typography variant="body2">Thời gian trả: {returnCreatedAtLabel || '-'}</Typography>
                           <Typography variant="body2">
-                            Net: {(Number(rd?.netAmount) || 0).toLocaleString('vi-VN')} đ
+                            Tiền trả: {returnedTotal.toLocaleString('en-US')} đ
+                          </Typography>
+                          {(rd.exchangeItems || []).length > 0 && (
+                            <Typography variant="body2">
+                              Tiền mua lại: {exchangeTotal.toLocaleString('en-US')} đ
+                            </Typography>
+                          )}
+                          <Typography variant="body2">
+                            Net: {(Number(rd?.netAmount) || 0).toLocaleString('en-US')} đ
                           </Typography>
                         </Box>
 
@@ -5167,16 +5850,75 @@ export default function PosPage() {
                                   <TableCell>{it2.productName || '—'}</TableCell>
                                   <TableCell align="right">{Number(it2.qty) || 0}</TableCell>
                                   <TableCell align="right">
-                                    {(Number(it2.price) || 0).toLocaleString('vi-VN')}
+                                    {(Number(it2.price) || 0).toLocaleString('en-US')}
                                   </TableCell>
                                   <TableCell align="right">
-                                    {(Number(it2.subtotal) || 0).toLocaleString('vi-VN')}
+                                    {(Number(it2.subtotal) || 0).toLocaleString('en-US')}
                                   </TableCell>
                                 </TableRow>
                               ))
                             )}
                           </TableBody>
                         </Table>
+
+                        {(rd.exchangeItems || []).length > 0 && (
+                          <Box sx={{ mt: 1.5 }}>
+                            <Typography variant="subtitle2" sx={{ mb: 0.5, fontWeight: 700, color: 'primary.main' }}>
+                              Sản phẩm mua lại (đổi hàng)
+                            </Typography>
+                            <Table size="small">
+                              <TableHead>
+                                <TableRow>
+                                  <TableCell>Mã hàng</TableCell>
+                                  <TableCell>Tên hàng</TableCell>
+                                  <TableCell align="right">SL</TableCell>
+                                  <TableCell align="right">Giá bán</TableCell>
+                                  <TableCell align="right">Giảm giá</TableCell>
+                                  <TableCell align="right">Thành tiền</TableCell>
+                                </TableRow>
+                              </TableHead>
+                              <TableBody>
+                                {rd.exchangeItems.map((it3, i3) => (
+                                  <TableRow key={`ex-${it3.productLocalId || it3.productCode || i3}`}>
+                                    <TableCell>
+                                      <Link
+                                        component="button"
+                                        href="#"
+                                        underline="hover"
+                                        onClick={(e) => {
+                                          e.preventDefault();
+                                          openProductMini(it3);
+                                        }}
+                                        sx={{ color: 'primary.main', fontWeight: 700 }}
+                                      >
+                                        {it3.productCode || '—'}
+                                      </Link>
+                                    </TableCell>
+                                    <TableCell>{it3.productName || '—'}</TableCell>
+                                    <TableCell align="right">{Number(it3.qty) || 0}</TableCell>
+                                    <TableCell align="right">
+                                      {(Number(it3.price) || 0).toLocaleString('en-US')}
+                                    </TableCell>
+                                    <TableCell align="right" sx={{ color: (Number(it3.discount) || 0) > 0 ? 'error.main' : 'inherit' }}>
+                                      {formatItemDiscountLabel(it3)}
+                                    </TableCell>
+                                    <TableCell align="right">
+                                      {(Number(it3.subtotal) || 0).toLocaleString('en-US')}
+                                    </TableCell>
+                                  </TableRow>
+                                ))}
+                                <TableRow>
+                                  <TableCell colSpan={5} align="right" sx={{ fontWeight: 700 }}>
+                                    Tổng mua lại
+                                  </TableCell>
+                                  <TableCell align="right" sx={{ fontWeight: 700 }}>
+                                    {exchangeTotal.toLocaleString('en-US')}
+                                  </TableCell>
+                                </TableRow>
+                              </TableBody>
+                            </Table>
+                          </Box>
+                        )}
                       </Box>
                     );
                   })
@@ -5186,6 +5928,92 @@ export default function PosPage() {
                   </Typography>
                 )}
               </Box>
+
+              {(orderHistoryDetail.showRepurchaseSection
+                || (orderHistoryDetail.returnDetails || []).length > 0) && (
+              <Box>
+                <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 700 }}>
+                  Đơn hàng khách đã mua lại / đang giữ (sau đổi trả)
+                </Typography>
+                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
+                  Đây là trạng thái hiện tại của hóa đơn — tổng tiền khách thực tế đang thanh toán sau các lần đổi trả.
+                </Typography>
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Mã hàng</TableCell>
+                      <TableCell>Tên hàng</TableCell>
+                      <TableCell align="right">SL</TableCell>
+                      <TableCell align="right">Đơn giá gốc</TableCell>
+                      <TableCell align="right">Giảm giá</TableCell>
+                      <TableCell align="right">Giá bán</TableCell>
+                      <TableCell align="right">Thành tiền</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {(orderHistoryDetail?.currentItems || []).length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={7} align="center">
+                          Không còn sản phẩm trên hóa đơn (đã trả hết)
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      orderHistoryDetail.currentItems.map((it, idx) => (
+                        <TableRow key={`cur-${it.productLocalId || it.productCode || idx}`}>
+                          <TableCell>
+                            <Link
+                              component="button"
+                              href="#"
+                              underline="hover"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                openProductMini(it);
+                              }}
+                              sx={{ color: 'primary.main', fontWeight: 700 }}
+                            >
+                              {it.productCode || '—'}
+                            </Link>
+                          </TableCell>
+                          <TableCell>{it.productName || '—'}</TableCell>
+                          <TableCell align="right">{Number(it.qty) || 0}</TableCell>
+                          <TableCell align="right">
+                            {(Number(it.basePrice) || Number(it.price) || 0).toLocaleString('en-US')}
+                          </TableCell>
+                          <TableCell align="right" sx={{ color: (Number(it.discount) || 0) > 0 ? 'error.main' : 'inherit' }}>
+                            {formatItemDiscountLabel(it)}
+                          </TableCell>
+                          <TableCell align="right">
+                            {(Number(it.price) || 0).toLocaleString('en-US')}
+                          </TableCell>
+                          <TableCell align="right">
+                            {(Number(it.subtotal) || 0).toLocaleString('en-US')}
+                          </TableCell>
+                        </TableRow>
+                      ))
+                    )}
+                    <TableRow>
+                      <TableCell colSpan={6} align="right" sx={{ fontWeight: 700 }}>
+                        Tổng tiền hàng hiện tại
+                      </TableCell>
+                      <TableCell align="right" sx={{ fontWeight: 700 }}>
+                        {(Number(orderHistoryDetail?.currentGoodsSubtotal) || 0).toLocaleString('en-US')}
+                      </TableCell>
+                    </TableRow>
+                    <TableRow>
+                      <TableCell colSpan={6} align="right" sx={{ fontWeight: 700 }}>
+                        Tổng khách đã thanh toán (hiện tại)
+                      </TableCell>
+                      <TableCell align="right" sx={{ fontWeight: 700, color: 'primary.main' }}>
+                        {(Number(orderHistoryDetail?.currentTotalAmount)
+                          || Number(orderHistoryDetail?.currentGoodsSubtotal)
+                          || 0
+                        ).toLocaleString('en-US')}
+                      </TableCell>
+                    </TableRow>
+                  </TableBody>
+                </Table>
+              </Box>
+              )}
             </Box>
           ) : (
             <Typography variant="body2" color="text.secondary">
@@ -5212,9 +6040,9 @@ export default function PosPage() {
               <Typography variant="body2" color="text.secondary">Số lượng</Typography>
               <Typography variant="body2">{Number(productMini.qty) || 0}</Typography>
               <Typography variant="body2" color="text.secondary">Đơn giá</Typography>
-              <Typography variant="body2">{(Number(productMini.price) || 0).toLocaleString('vi-VN')}</Typography>
+              <Typography variant="body2">{(Number(productMini.price) || 0).toLocaleString('en-US')}</Typography>
               <Typography variant="body2" color="text.secondary">Thành tiền</Typography>
-              <Typography variant="body2">{(Number(productMini.subtotal) || 0).toLocaleString('vi-VN')}</Typography>
+              <Typography variant="body2">{(Number(productMini.subtotal) || 0).toLocaleString('en-US')}</Typography>
             </Box>
           ) : (
             <Typography variant="body2" color="text.secondary">Không có dữ liệu</Typography>
@@ -5333,7 +6161,7 @@ export default function PosPage() {
                         Tổng tiền trả hàng
                       </Typography>
                       <Typography variant="body2">
-                        {totalReturnAmount.toLocaleString('vi-VN')}
+                        {totalReturnAmount.toLocaleString('en-US')}
                       </Typography>
                     </Box>
                     <Box>
@@ -5341,7 +6169,7 @@ export default function PosPage() {
                         Tổng tiền mua hàng
                       </Typography>
                       <Typography variant="body2">
-                        {totalExchangeAmount.toLocaleString('vi-VN')}
+                        {totalExchangeAmount.toLocaleString('en-US')}
                       </Typography>
                     </Box>
                     <Box>
@@ -5349,7 +6177,7 @@ export default function PosPage() {
                         {diffLabel}
                       </Typography>
                       <Typography variant="body2">
-                        {diffValue.toLocaleString('vi-VN')}
+                        {diffValue.toLocaleString('en-US')}
                       </Typography>
                     </Box>
                     <Box>
@@ -5359,7 +6187,7 @@ export default function PosPage() {
                       <Typography variant="body2">
                         {deltaBuyVsReturn === 0
                           ? '0'
-                          : cashFlowAmount.toLocaleString('vi-VN')}
+                          : cashFlowAmount.toLocaleString('en-US')}
                       </Typography>
                     </Box>
                   </Box>
@@ -5386,10 +6214,10 @@ export default function PosPage() {
                           <TableCell>{item.productName}</TableCell>
                           <TableCell align="right">{item.qty}</TableCell>
                           <TableCell align="right">
-                            {(Number(item.price) || 0).toLocaleString('vi-VN')}
+                            {(Number(item.price) || 0).toLocaleString('en-US')}
                           </TableCell>
                           <TableCell align="right">
-                            {(Number(item.subtotal) || 0).toLocaleString('vi-VN')}
+                            {(Number(item.subtotal) || 0).toLocaleString('en-US')}
                           </TableCell>
                         </TableRow>
                       ))}
@@ -5422,10 +6250,10 @@ export default function PosPage() {
                           <TableCell>{item.productName}</TableCell>
                           <TableCell align="right">{item.qty}</TableCell>
                           <TableCell align="right">
-                            {(Number(item.price) || 0).toLocaleString('vi-VN')}
+                            {(Number(item.price) || 0).toLocaleString('en-US')}
                           </TableCell>
                           <TableCell align="right">
-                            {(Number(item.subtotal) || 0).toLocaleString('vi-VN')}
+                            {(Number(item.subtotal) || 0).toLocaleString('en-US')}
                           </TableCell>
                         </TableRow>
                       ))}

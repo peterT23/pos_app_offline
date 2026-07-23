@@ -28,6 +28,10 @@ import {
 import db, { generateLocalId, checkBarcodeExists, generateProductCode, checkProductCodeExists } from '../db/posDB';
 import { isBarcode } from '../utils/searchUtils';
 import { apiRequest } from '../utils/apiClient';
+import {
+  normalizeMoneyTyping,
+  parseMoneyInput,
+} from '../utils/moneyFormat';
 
 /**
  * Component ProductSearchDropdown: Dropdown hiển thị kết quả tìm kiếm sản phẩm
@@ -404,7 +408,7 @@ export default function ProductSearchDropdown({
                         color="primary"
                         sx={{ fontWeight: 600 }}
                       >
-                        {product.price?.toLocaleString('vi-VN')}
+                        {product.price?.toLocaleString('en-US')}
                       </Typography>
                     </Box>
                   </ListItem>
@@ -559,17 +563,19 @@ export default function ProductSearchDropdown({
                   onChange={(e) => setNewProduct({ ...newProduct, allowPoints: e.target.checked })}
                 />
               }
-              label="Tích điểm (50.000đ = 1 điểm)"
+              label="Tích điểm (50,000đ = 1 điểm)"
             />
             
             <Box sx={{ display: 'flex', gap: 2 }}>
               <TextField
                 label="Giá bán *"
                 fullWidth
-                type="number"
                 value={newProduct.price}
                 onFocus={(e) => e.target.select()}
-                onChange={(e) => setNewProduct({ ...newProduct, price: e.target.value })}
+                onChange={(e) => {
+                  const typed = normalizeMoneyTyping(e.target.value);
+                  setNewProduct({ ...newProduct, price: typed.display });
+                }}
                 required
                 InputProps={{
                   endAdornment: <Typography variant="body2" sx={{ mr: 1 }}>đ</Typography>
@@ -579,10 +585,12 @@ export default function ProductSearchDropdown({
               <TextField
                 label="Giá vốn"
                 fullWidth
-                type="number"
                 value={newProduct.costPrice}
                 onFocus={(e) => e.target.select()}
-                onChange={(e) => setNewProduct({ ...newProduct, costPrice: e.target.value })}
+                onChange={(e) => {
+                  const typed = normalizeMoneyTyping(e.target.value);
+                  setNewProduct({ ...newProduct, costPrice: typed.display });
+                }}
                 InputProps={{
                   endAdornment: <Typography variant="body2" sx={{ mr: 1 }}>đ</Typography>
                 }}
@@ -651,8 +659,8 @@ export default function ProductSearchDropdown({
                 return;
               }
               
-              const price = parseFloat(newProduct.price);
-              if (isNaN(price) || price < 0) {
+              const price = parseMoneyInput(newProduct.price);
+              if (!Number.isFinite(price) || price < 0) {
                 setAddProductError('Vui lòng nhập giá bán hợp lệ');
                 return;
               }
@@ -688,7 +696,7 @@ export default function ProductSearchDropdown({
                   categoryId: newProduct.categoryId || null,
                   allowPoints: newProduct.allowPoints || false,
                   price: price,
-                  costPrice: newProduct.costPrice ? parseFloat(newProduct.costPrice) : 0,
+                  costPrice: newProduct.costPrice ? parseMoneyInput(newProduct.costPrice) : 0,
                   stock: stock,
                   unit: newProduct.unit || 'Cái',
                   createdAt: now,

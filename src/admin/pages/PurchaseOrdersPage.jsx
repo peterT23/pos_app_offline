@@ -48,6 +48,7 @@ import MoreHorizIcon from '@mui/icons-material/MoreHoriz';
 import CloseIcon from '@mui/icons-material/Close';
 import Layout from '../components/Layout';
 import { apiRequest } from '../utils/apiClient';
+import { formatMoney } from '../../utils/moneyFormat';
 
 const STATUS_OPTIONS = [
   { value: 'draft', label: 'Phiếu tạm' },
@@ -178,9 +179,6 @@ function getTimePresetRange(preset) {
   return { start: toYMD(start), end: toYMD(end) };
 }
 
-function formatMoney(n) {
-  return (Number(n) || 0).toLocaleString('vi-VN');
-}
 
 export default function PurchaseOrdersPage() {
   const navigate = useNavigate();

@@ -9,6 +9,7 @@ on:
 jobs:
   build-win:
     runs-on: windows-latest
+    timeout-minutes: 45
 
     steps:
       - name: Checkout source
@@ -24,6 +25,7 @@ jobs:
         run: npm ci
 
       - name: Apply version from Git tag
+        shell: pwsh
         run: |
           if ("${env:GITHUB_REF}".StartsWith("refs/tags/v")) {
             $version = "${env:GITHUB_REF_NAME}".Substring(1)
@@ -52,3 +54,5 @@ jobs:
             release/*.exe
             release/*.blockmap
             release/latest*.yml
+          if-no-files-found: error
+          retention-days: 14

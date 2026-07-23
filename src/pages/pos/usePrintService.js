@@ -64,10 +64,10 @@ export function usePrintService({
             <td class="item-name">${item.product?.name || ''}</td>
             <td class="item-qty">${item.qty}</td>
             <td class="item-price">
-              <div class="price-final">${finalPrice.toLocaleString('vi-VN')}</div>
-              ${hasDiscount ? `<div class="price-original">${basePrice.toLocaleString('vi-VN')}</div>` : ''}
+              <div class="price-final">${finalPrice.toLocaleString('en-US')}</div>
+              ${hasDiscount ? `<div class="price-original">${basePrice.toLocaleString('en-US')}</div>` : ''}
             </td>
-            <td class="item-total">${lineTotal.toLocaleString('vi-VN')}</td>
+            <td class="item-total">${lineTotal.toLocaleString('en-US')}</td>
           </tr>
         `;
       })
@@ -96,28 +96,28 @@ export function usePrintService({
               color: #000;
               margin: 0;
               padding: 0;
-              font-size: 11px;
+              font-size: 13px;
               font-weight: 600;
               -webkit-print-color-adjust: exact;
               print-color-adjust: exact;
             }
             .receipt { width: 76mm; margin: 0 auto; }
             .header { text-align: center; margin-bottom: 6px; }
-            .store-name { font-size: 13px; font-weight: 700; color: #000; }
-            .store-line { font-size: 10px; margin-top: 1px; color: #000; font-weight: 600; }
-            .section { margin-top: 6px; font-size: 10.5px; }
+            .store-name { font-size: 15px; font-weight: 700; color: #000; }
+            .store-line { font-size: 12px; margin-top: 1px; color: #000; font-weight: 600; }
+            .section { margin-top: 6px; font-size: 13px; }
             .section-title { font-weight: 700; margin-bottom: 4px; color: #000; }
-            table { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 10.5px; }
+            table { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 13px; }
             th, td { padding: 3px 2px; border-bottom: 1px dashed #000; vertical-align: top; color: #000; }
             th { text-align: left; font-weight: 700; }
             .item-qty, .item-price, .item-total { text-align: right; }
             .price-final { font-weight: 700; color: #000; }
-            .price-original { color: #000; text-decoration: line-through; font-size: 9px; font-weight: 600; }
-            .summary { margin-top: 8px; font-size: 10.5px; }
+            .price-original { color: #000; text-decoration: line-through; font-size: 11px; font-weight: 600; }
+            .summary { margin-top: 8px; font-size: 13px; }
             .summary-row { display: flex; justify-content: space-between; margin-top: 4px; }
-            .summary-total { font-weight: 700; font-size: 11px; color: #000; }
+            .summary-total { font-weight: 700; font-size: 14px; color: #000; }
             .divider { border-top: 1px dashed #000; margin: 8px 0; }
-            .cut-line { margin-top: 8px; padding-top: 4px; border-top: 1px dashed #000; text-align: center; font-size: 9px; font-weight: 700; color: #000; }
+            .cut-line { margin-top: 8px; padding-top: 4px; border-top: 1px dashed #000; text-align: center; font-size: 11px; font-weight: 700; color: #000; }
           </style>
         </head>
         <body>
@@ -159,7 +159,7 @@ export function usePrintService({
               <div class="divider"></div>
               <div class="summary-row summary-total">
                 <span>Tổng tiền thanh toán</span>
-                <span>${totalAmount.toLocaleString('vi-VN')}</span>
+                <span>${totalAmount.toLocaleString('en-US')}</span>
               </div>
               <div class="summary-row">
                 <span>Phương thức thanh toán</span>
